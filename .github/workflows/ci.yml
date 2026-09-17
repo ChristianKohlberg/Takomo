@@ -1,9 +1,6 @@
-name: CI
+name: Full verification
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   schedule:
     - cron: '23 2 * * *'
   workflow_dispatch:
@@ -17,27 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  scope:
-    name: Validation scope
-    runs-on: ubuntu-latest
-    outputs:
-      full: ${{ steps.scope.outputs.full }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: scope
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          if [[ "$EVENT" == schedule || "$EVENT" == workflow_dispatch ]]; then
-            echo 'full=true' >> "$GITHUB_OUTPUT"
-          else
-            full=$(./scripts/ci-full-required.sh "$BASE_SHA")
-            echo "full=$full" >> "$GITHUB_OUTPUT"
-          fi
-
   agent-service:
     name: Codex agent service protocol tests
     runs-on: ubuntu-latest
@@ -49,7 +25,7 @@ jobs:
       - run: node --test services/agent/test/*.test.mjs services/lanes/test/*.test.mjs clients/cli/test/*.test.mjs
 
   rust:
-    needs: [web, scope]
+    needs: web
     if: ${{ !cancelled() }}
     name: Rust (build · clippy · fmt · test)
     runs-on: ubuntu-latest
@@ -57,12 +33,11 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - name: Upstream jobs succeeded
-        if: needs.web.result != 'success' || needs.scope.result != 'success'
+        if: needs.web.result != 'success'
         env:
           WEB_RESULT: ${{ needs.web.result }}
-          SCOPE_RESULT: ${{ needs.scope.result }}
         run: |
-          echo "::error::cannot run Rust checks: web=$WEB_RESULT scope=$SCOPE_RESULT"
+          echo "::error::cannot run Rust checks: web=$WEB_RESULT"
           exit 1
 
       - uses: actions/checkout@v4
@@ -92,18 +67,12 @@ jobs:
       # Keep the existing check name for branch-protection compatibility.
       # Full runs also compile the shipping binary and use release-profile tests.
       - name: Build (release)
-        if: needs.scope.outputs.full == 'true'
         run: cargo build --release --locked
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Test (debug)
-        if: needs.scope.outputs.full != 'true'
-        run: cargo test --locked
-
       - name: Test (release)
-        if: needs.scope.outputs.full == 'true'
         run: cargo test --release --locked
 
   deps:
@@ -244,8 +213,18 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Unit tests
-        run: npm test
+      - name: Coverage by layer (includes the full test suite)
+        run: |
+          npm run coverage:unit
+          npm run coverage:integration
+          npm run coverage
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-coverage
+          path: web/coverage/
+          retention-days: 14
 
       - name: Build the pages
         run: npm run build
@@ -267,8 +246,6 @@ jobs:
           retention-days: 7
 
   docker:
-    needs: scope
-    if: needs.scope.outputs.full == 'true'
     name: Docker image (builds · serves every page)
     runs-on: ubuntu-latest
     steps:
@@ -330,3 +307,33 @@ jobs:
       - name: Hosted and stdio MCP client integration tests
         working-directory: .
         run: cargo test --release --locked --test mcp_clients -- --ignored
+
+  backend-coverage:
+    needs: web
+    name: Backend coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+      - name: Install coverage tool
+        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
+      - name: Measure unit, integration, and combined coverage
+        run: bash scripts/coverage-backend.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-coverage
+          path: target/coverage/
+          retention-days: 14

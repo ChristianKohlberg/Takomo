@@ -197,6 +197,17 @@ export default defineConfig({
     },
   },
   test: {
+    // Native import-graph selection; these non-module inputs invalidate all tests.
+    forceRerunTriggers: ['package.json', 'package-lock.json', 'vite.config.*',
+      'tsconfig*.json', 'src/styles/**', 'src/test-setup.ts']
+      .map(pattern => resolve(import.meta.dirname, pattern)),
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/**/*.test.{ts,tsx}', 'src/test-setup.ts', 'src/**/*.d.ts'],
+      reporter: ['text', 'json-summary', 'html', 'lcov'],
+      reportsDirectory: 'coverage/combined',
+    },
     environment: 'jsdom',
     globals: true,
     // Stubs for the browser APIs Radix's overlay primitives measure with; see

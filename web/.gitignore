@@ -6,3 +6,5 @@ dist-lib/
 
 # Generated app assets are built before Rust embeds them.
 dist/
+
+coverage/
