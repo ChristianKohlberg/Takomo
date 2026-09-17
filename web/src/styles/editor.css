@@ -232,10 +232,6 @@
 .section-actions button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 6px 8px; text-align: left; border-radius: 4px; }
 .section-actions button:hover, .section-actions button:focus-visible { background: var(--muted); }
 .section-actions > [data-state] { width: 100%; }
-.inline-section { min-height: 24px; margin-block: 4px; }
-.inline-section-reveal { color: var(--muted-foreground); font-size: 12px; padding: 2px 8px; border-radius: 4px; }
-.inline-section-reveal:hover, .inline-section-reveal:focus-visible { background: var(--muted); color: var(--foreground); }
-@media (hover: hover) { .inline-section-reveal { opacity: 0; } .inline-section:hover .inline-section-reveal, .inline-section-reveal:focus-visible { opacity: 1; } }
 .document-toolbar > * { flex-shrink: 0; }
 .document-toolbar { scrollbar-width: thin; }
 .document-outline { min-width: 0; }

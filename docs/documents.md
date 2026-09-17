@@ -285,8 +285,8 @@ returns to the command menu. Mermaid, PlantUML, D2 and Wireframe insertions star
 editable source. Their shared Code / View controls render through the configured private
 Kroki service; see [diagrams and wireframes](diagrams.md) for setup, limits and offline behavior.
 
-`/h1`, `/h2` and `/h3` ask for a section title and create a real shared section at the
-current section boundary. H1 creates a top-level section; H2 and H3 nest under the appropriate
+`/h1 Title`, `/h2 Title` and `/h3 Title` create a real shared section on Enter at the
+current section boundary. A bare `/h1`, `/h2` or `/h3` opens a title prompt. H1 creates a top-level section; H2 and H3 nest under the appropriate
 preceding parent. Levels that would skip a parent remain visible with an explanation.
 Creation focuses the new section body and leaves surrounding prose in the original section.
 Back or Escape keeps the slash query; a refused creation retains the title for retry.
@@ -299,7 +299,23 @@ replaces it, and insertion uses the current section's normal collaboration and u
 If the trigger is removed or the caret leaves it, the menu closes. A stale choice cannot
 replace text changed by another collaborator. Read-only viewers have no insertion menu.
 
+An empty document offers the same slash entry for its first H1; the draft stays local until
+creation succeeds. There are no repeated inline Add section rows or heading/formatting
+buttons in the ribbon. Keyboard formatting and block commands remain available.
+
 ## Section controls, focus mode and history
+
+Sections stay expanded by default. To make a section collapsible, type `/collapse` in an
+empty paragraph and write a summary in the prompt. A nonempty handwritten summary is
+required; no excerpt is generated from the body. Saving adds a chevron beside the heading
+and in the outline. Folding hides the body and nested sections, leaving the heading and
+authored summary visible. An H1 can therefore act as a collapsible document within the
+specification. Run `/collapse` again to edit the summary or choose **Keep always expanded**.
+
+The summary is shared document content (`collapse_summary` on the section's CRDT node).
+Only writers configure it; readers can toggle opted-in sections. Fold preferences belong
+to each reader's browser, and expand/collapse-all only affects opted-in sections. Search,
+section links, comments, history, and proposals reveal their targets.
 
 Section actions sit behind the ellipsis beside each heading. The menu contains the accessible
 colored trust indicator and review/history actions; pending proposals remain visible. The copy

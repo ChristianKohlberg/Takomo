@@ -40,6 +40,7 @@ export interface OutlineRailProps {
   locale?: 'en' | 'de'
   numbering?: { h1: boolean; h2: boolean }
   /** Section keys this viewer has folded. Never shared. */
+  collapsible?: ReadonlySet<string>
   collapsed: ReadonlySet<string>
   onToggle: (key: string) => void
   /** Where each section stands, by key. Absent means the plan has no history yet. */
@@ -85,6 +86,7 @@ export function OutlineRail({
   locale = 'en',
   numbering = { h1: true, h2: true },
   collapsed,
+  collapsible,
   onToggle,
   pending,
   labels,
@@ -101,7 +103,7 @@ export function OutlineRail({
   const suppressClick = useRef(false)
   const cancelHold = () => { if (hold.current) clearTimeout(hold.current.timer); hold.current = null }
   useEffect(() => () => { if (hold.current) clearTimeout(hold.current.timer) }, [onMove])
-  const branches = flattenSections(sections).filter(section => section.children.length)
+  const branches = flattenSections(sections).filter(section => !collapsible || collapsible.has(section.key))
   const instructions = useId()
   const de = locale === 'de'
   const focusKey = rows.some(row => row.key === focused) ? focused : rows.some(row => row.key === selected) ? selected : rows[0]?.key
@@ -140,8 +142,9 @@ export function OutlineRail({
         const parent = outlineParent(sections, section.key)
         const siblings = parent ? flattenSections(sections).find(row => row.key === parent)!.children : sections
         const active = section.key === selected
+        const canFold = !collapsible || collapsible.has(section.key)
         const hasChildren = section.children.length > 0
-        const folded = hasChildren && collapsed.has(section.key)
+        const folded = collapsed.has(section.key)
         const hidden = folded ? sectionCount(section) : 0
         const waiting = pending
           ? folded
@@ -157,7 +160,7 @@ export function OutlineRail({
             aria-level={section.depth + 1}
             aria-posinset={siblings.findIndex(row => row.key === section.key) + 1}
             aria-setsize={siblings.length}
-            aria-expanded={hasChildren ? !folded : undefined}
+            aria-expanded={canFold ? !folded : undefined}
             aria-selected={active}
             tabIndex={section.key === focusKey ? 0 : -1}
             onFocus={() => setFocused(section.key)}
@@ -184,7 +187,7 @@ export function OutlineRail({
               else if (event.key === 'Home') { event.preventDefault(); focus(rows[0]?.key) }
               else if (event.key === 'End') { event.preventDefault(); focus(rows.at(-1)?.key) }
               else if (event.key === 'ArrowRight') { event.preventDefault(); if (folded) onToggle(section.key); else if (hasChildren) focus(section.children[0]?.key) }
-              else if (event.key === 'ArrowLeft') { event.preventDefault(); if (hasChildren && !folded) onToggle(section.key); else focus(outlineParent(sections, section.key) ?? undefined) }
+              else if (event.key === 'ArrowLeft') { event.preventDefault(); if (hasChildren && canFold && !folded) onToggle(section.key); else focus(outlineParent(sections, section.key) ?? undefined) }
               else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(section.key) }
               else if (event.key === 'Escape') { clearDrag() }
             }}
@@ -220,20 +223,18 @@ export function OutlineRail({
             // Tailwind cannot spell an arbitrary one without a class per level.
             style={{ paddingLeft: `${2 + Math.min(section.depth, 4) * 12}px` }}
           >
-            {hasChildren ? (
+            {canFold ? (
               <button
                 type="button"
                 tabIndex={-1}
                 aria-label={folded ? labels.expand : labels.collapse}
-                aria-expanded={!folded}
+                aria-expanded={canFold ? !folded : undefined}
                 onClick={() => onToggle(section.key)}
                 className="text-muted-foreground hover:text-foreground w-4 flex-none text-[10px]"
               >
 <ChevronRight aria-hidden="true" className={cn("size-3.5 transition-transform", !folded && "rotate-90")} />
               </button>
-            ) : (
-              <span className="w-4 flex-none" aria-hidden="true" />
-            )}
+            ) : <span className="w-4 flex-none" aria-hidden="true" />}
 
             <span className="flex w-2.5 flex-none justify-center" aria-hidden="true">
               <span
@@ -266,7 +267,7 @@ export function OutlineRail({
               </span>
             </button>
 
-            {folded && (
+            {folded && hidden > 0 && (
               <span
                 className="text-muted-foreground flex-none font-mono text-[10px]"
                 title={labels.folded.replace('{n}', String(hidden))}

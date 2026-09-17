@@ -109,9 +109,14 @@ export function insertSlashBlock(editor: Editor, match: SlashMatch, kind: Insert
  * Do not focus this editor: the section owner focuses the newly created body. */
 export function insertSlashSection(editor: Editor, match: SlashMatch, level: 1 | 2 | 3, title: string,
   insert: (level: 1 | 2 | 3, title: string) => boolean): boolean {
+  if (!title.trim()) return false
+  return applySlashAction(editor, match, () => insert(level, title.trim()))
+}
+
+export function applySlashAction(editor: Editor, match: SlashMatch, apply: () => boolean): boolean {
   const current = slashMatch(editor.state)
-  if (!title.trim() || !editor.isEditable || !current || current.from !== match.from || current.to !== match.to || current.query !== match.query) return false
-  if (!insert(level, title.trim())) return false
+  if (!editor.isEditable || !current || current.from !== match.from || current.to !== match.to || current.query !== match.query) return false
+  if (!apply()) return false
   editor.view.dispatch(editor.state.tr.delete(match.from, match.to).setMeta(slashKey, { close: true }))
   return true
 }

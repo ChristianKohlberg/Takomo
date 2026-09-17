@@ -4,7 +4,7 @@ import { Editor } from '@tiptap/react'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
-import SectionEditor from './SectionEditor'
+import SectionEditor, { type SectionEditorProps } from './SectionEditor'
 import { insertSlashSection, insertSlashBlock, slashMatch } from '@/lib/slash-insert'
 
 import { createNode, readPlanTree } from '@/lib/mindmap-crdt'
@@ -12,13 +12,13 @@ import { insertPlanSection } from '@/lib/plan-insert'
 
 const resources: (() => void)[] = []
 afterEach(() => { cleanup(); resources.splice(0).forEach(destroy => destroy()) })
-function mount(canWrite = true, onInsertSection = vi.fn(() => true), maxSectionLevel = 3) {
+function mount(canWrite = true, onInsertSection = vi.fn(() => true), maxSectionLevel = 3, collapse: Partial<SectionEditorProps> = {}) {
   const doc = new Y.Doc(), awareness = new Awareness(doc)
   resources.push(() => { awareness.destroy(); doc.destroy() })
   let editor!: Editor
   render(<SectionEditor ydoc={doc} fragment={doc.getXmlFragment('prose')} provider={{ awareness } as unknown as WebsocketProvider}
     display="Ada" color="#2563eb" canWrite={canWrite} onSettled={() => {}} label="Prose"
-    maxSectionLevel={maxSectionLevel} onInsertSection={onInsertSection} onEditor={value => { if (value) editor = value }} />)
+    {...collapse} maxSectionLevel={maxSectionLevel} onInsertSection={onInsertSection} onEditor={value => { if (value) editor = value }} />)
   vi.spyOn(editor.view, 'coordsAtPos').mockReturnValue({ left: 20, right: 20, top: 20, bottom: 40 })
   return { editor, doc, onInsertSection }
 }
@@ -34,6 +34,53 @@ function type(editor: Editor, text: string) {
 function key(editor: Editor, key: string) { fireEvent.keyDown(editor.view.dom, { key }) }
 
 describe('slash insertion in a collaborative section', () => {
+  it('requires an authored summary before making a section collapsible', () => {
+    const save = vi.fn(() => true)
+    const { editor } = mount(true, vi.fn(() => true), 3, { onSetSectionSummary: save })
+    type(editor, '/collapse'); key(editor, 'Enter')
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Summary'), { target: { value: '  ' } })
+    fireEvent.submit(screen.getByRole('dialog'))
+    expect(save).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'Data model and relationships.' } })
+    fireEvent.submit(screen.getByRole('dialog'))
+    expect(save).toHaveBeenCalledExactlyOnceWith('Data model and relationships.')
+    expect(editor.state.doc.textContent).toBe('')
+  })
+  it('edits or removes collapsibility and preserves the query on cancellation', () => {
+    const remove = vi.fn(() => true)
+    const { editor } = mount(true, vi.fn(() => true), 3, {
+      sectionSummary: 'Existing summary.', onSetSectionSummary: () => true, onRemoveSectionSummary: remove,
+    })
+    type(editor, '/collapse'); key(editor, 'Enter')
+    expect((screen.getByLabelText('Summary') as HTMLTextAreaElement).value).toBe('Existing summary.')
+    fireEvent.keyDown(screen.getByLabelText('Summary'), { key: 'Escape' })
+    expect(editor.state.doc.textContent).toBe('/collapse')
+    key(editor, 'Enter')
+    fireEvent.click(screen.getByRole('button', { name: 'Keep always expanded' }))
+    expect(remove).toHaveBeenCalledOnce()
+    expect(editor.state.doc.textContent).toBe('')
+  })
+
+  it.each([1, 2, 3])('creates H%s directly from a slash command and title', level => {
+    const { editor, onInsertSection } = mount()
+    type(editor, `/h${level} Payments and invoices`)
+    key(editor, 'Enter')
+    expect(onInsertSection).toHaveBeenCalledExactlyOnceWith(level, 'Payments and invoices')
+    expect(editor.state.doc.textContent).toBe('')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+  it('retains a direct title when creation fails and allows retry', () => {
+    const insert = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
+    const { editor } = mount(true, insert)
+    type(editor, '/h2 Payments'); key(editor, 'Enter')
+    expect(screen.getByRole('alert')).toBeTruthy()
+    expect(editor.state.doc.textContent).toBe('/h2 Payments')
+    key(editor, 'Enter')
+    expect(insert).toHaveBeenCalledTimes(2)
+    expect(editor.state.doc.textContent).toBe('')
+  })
+
   it('filters commands and inserts a quotation with keyboard focus', () => {
     const { editor } = mount()
     type(editor, '/quote')

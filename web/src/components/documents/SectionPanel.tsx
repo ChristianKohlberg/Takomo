@@ -73,6 +73,10 @@ export interface SectionPanelLabels {
 export interface SectionPanelProps {
   /** `2.1.3`. The shared address of this part of the plan. */
   number: string
+  collapsed?: boolean
+  onToggleCollapse?: () => void
+  collapseLabel?: string
+  summary?: ReactNode
   showNumber?: boolean
   /** 0 for a first-ring node. Heading level, indent and quiet all read it. */
   depth: number
@@ -141,6 +145,7 @@ const STANDING_CLASS: Record<Standing, string> = {
 export function SectionPanel({
   number,
   showNumber = true,
+  collapsed = false, onToggleCollapse, collapseLabel, summary,
   depth,
   title,
   onTitle,
@@ -175,6 +180,7 @@ export function SectionPanel({
 }: SectionPanelProps) {
   const [actionsOpen, setActionsOpen] = useState(false)
   const actionsId = useId()
+  const contentId = useId()
   const actionsRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -222,6 +228,10 @@ export function SectionPanel({
           onMouseDown={(event) => event.preventDefault()} onClick={() => setActionsOpen((value) => !value)}>
           <MoreHorizontal className="size-4" aria-hidden="true" />
         </button>
+        {onToggleCollapse && <button type="button" onClick={onToggleCollapse} aria-expanded={!collapsed} aria-controls={contentId}
+          aria-label={collapseLabel} title={collapseLabel} className="text-muted-foreground shrink-0 rounded p-1 hover:bg-muted">
+          <span aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+        </button>}
         {showNumber && <span className={`document-section-number document-section-number-${Math.min(depth + 1, 6)} flex-none`}>{number}</span>}
         {canWrite && onTitle ? (
           <EditableText
@@ -307,6 +317,9 @@ export function SectionPanel({
         </button>
       </div>
 
+      {collapsed && summary}
+      <div id={contentId} hidden={collapsed}>
+      {!collapsed && <>
       {historyOpen && (
         <ul className="text-muted-foreground border-border-soft mb-3 flex flex-col gap-0.5 border-l pl-3 text-[11.5px]">
           {historyLoading && <li role="status">{labels.historyLoading ?? 'Loading history…'}</li>}
@@ -331,6 +344,8 @@ export function SectionPanel({
       {children}
 
       {proposalsOpen && proposals}
+      </>}
+      </div>
     </section>
   )
 }
