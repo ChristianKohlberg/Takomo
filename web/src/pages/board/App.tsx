@@ -9,6 +9,7 @@ import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { CreateEpicDialog } from '@/components/board/CreateEpicDialog'
+import { SettingsIcon } from 'lucide-react'
 import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
 import { useNavigate } from 'react-router'
@@ -27,7 +28,6 @@ import { DOCUMENT_LINKS } from '@/components/board/document-link-strings'
 import { groupTicketsByDocument, withoutDocumentReference } from '@/lib/ticket-document-groups'
 import { TicketDocumentLinks } from '@/components/board/TicketDocumentLinks'
 import { DetailPanel } from '@/components/board/DetailPanel'
-import { InboxDrawer } from '@/components/board/InboxDrawer'
 import { AnswerGrantPage } from './AnswerGrantPage'
 import { SharePage } from './SharePage'
 
@@ -45,7 +45,7 @@ import {
   type Ticket,
   type Workflow,
 } from '@/lib/board'
-import { answerQuestion, askQuestion, listQuestions, type Question } from '@/lib/questions'
+import { askQuestion, listQuestions, type Question } from '@/lib/questions'
 import { STR } from './strings'
 import { Hint } from '@/components/Hint'
 import { Picker } from '@/components/Picker'
@@ -221,18 +221,11 @@ function Board({
     saveToken('')
     setToken('')
   }, [])
-  const [inboxOpen, setInboxOpen] = useState(false)
   const [me, setMe] = useState({ actor: '', scopes: [] as string[], expertise: [] as string[] })
 
   const [detail, setDetail] = useState<Ticket | null>(null)
   const [questions, setQuestions] = useState<Question[]>([])
   const [asking, setAsking] = useState(false)
-
-  // The live indicator. `idle` before the first load, `live` once the event
-  // cursor is moving, `reconnecting` when a poll failed — a board that has
-  // quietly stopped updating looks exactly like a board with nothing happening,
-  // which is the failure this makes visible.
-  const [conn, setConn] = useState<'idle' | 'loading' | 'live' | 'reconnecting'>('idle')
 
   const handleErr = useCallback(
     (e: unknown) => {
@@ -271,7 +264,6 @@ function Board({
   const load = useCallback(async () => {
     if (!token || !effectiveProject) return
     setLoadError(false)
-    setConn((c) => (c === 'live' ? c : 'loading'))
     const [wf, ts] = await Promise.all([
       getWorkflow(token, effectiveProject),
       listTickets(token, effectiveProject),
@@ -282,7 +274,6 @@ function Board({
     if (activeScope.current !== effectiveProject) return
     setWorkflow(wf)
     setTickets(ts)
-    setConn('live')
   }, [token, effectiveProject])
 
   useEffect(() => {
@@ -325,10 +316,10 @@ function Board({
       if (!signal.aborted) { setWorkflow(value); refreshFailures.current.delete('workflow'); setLoadError(refreshFailures.current.size > 0) }
     },
   })
-  const updates = useLiveRefresh({
+  useLiveRefresh({
     token, project: effectiveProject, scope: 'tickets', topics: ['tickets', 'projects'],
     enabled: !!effectiveProject,
-    onError: error => { refreshFailures.current.add('tickets'); setLoadError(true); setConn('reconnecting'); handleErr(error) },
+    onError: error => { refreshFailures.current.add('tickets'); setLoadError(true); handleErr(error) },
     load: async signal => {
       const value = await listTickets(token, effectiveProject)
       if (signal.aborted) return
@@ -340,7 +331,6 @@ function Board({
       loadedTicketsScope.current = scope
     },
   })
-  useEffect(() => { setConn(updates.connected ? 'live' : 'reconnecting') }, [updates.connected])
 
   // The roadmap, fetched only while the epics view is open: it runs a query per
   // epic, so a reader on the board should not pay for it. A failed read is
@@ -734,30 +724,6 @@ function Board({
         <label className="text-muted-foreground flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-primary" checked={compact} onChange={event => setCompact(event.target.checked)} />{t.compact}</label>
         {activeFilterCount > 0 && <Button variant="outline" size="sm" onClick={clearFilters}>{t.clearFilters} ({activeFilterCount})</Button>}
         </div></PopoverContent></Popover>
-        <Button variant="outline" size="sm" onClick={() => setInboxOpen(true)}>
-          {t.fullInbox}
-          {questions.length > 0 && (
-            <span className="bg-primary text-primary-foreground ml-1.5 rounded-[9px] px-1.5 text-[11px] font-bold">
-              {questions.length}
-            </span>
-          )}
-        </Button>
-        {/* Live status. A board that has quietly stopped updating looks exactly
-            like a board with nothing happening — this is what tells them apart. */}
-        <Hint text={conn === 'live' ? t.live : conn === 'reconnecting' ? t.reconnecting : t.loading}>
-          <span
-            role="status"
-            aria-label={conn === 'live' ? t.live : conn === 'reconnecting' ? t.reconnecting : t.loading}
-            className={cn(
-              'text-[12px]',
-              conn === 'live' && 'text-ok',
-              conn === 'reconnecting' && 'text-crit',
-              (conn === 'idle' || conn === 'loading') && 'text-muted-foreground',
-            )}
-          >
-            {conn === 'live' ? t.live : conn === 'reconnecting' ? t.reconnecting : t.loading}
-          </span>
-        </Hint>
         {/* Project configuration lives in /settings now, not in a dialog here.
             A board is for looking at tickets; the page you go to in order to
             change how a project behaves is the settings page, and half the
@@ -765,10 +731,11 @@ function Board({
         {me.scopes.includes('admin') && <Hint text={t.settings}>
           <Button
             variant="outline"
-            size="sm"
+            size="icon"
+            aria-label={t.settings}
             onClick={() => navigate(`/settings?project=${encodeURIComponent(effectiveProject)}`)}
           >
-            {t.settings}
+            <SettingsIcon size={16} aria-hidden="true" />
           </Button>
         </Hint>}
         <Hint text={t.refresh}>
@@ -1005,43 +972,6 @@ function Board({
           ask: t.send,
           cancel: t.cancel,
           needTitle: t.typeFirst,
-        }}
-      />
-
-      <InboxDrawer
-        open={inboxOpen}
-        questions={questions}
-        canAnswer={me.scopes.includes('human')}
-        onClose={() => setInboxOpen(false)}
-        onAnswer={async (q, value, note) => {
-          await answerQuestion(token, q.id, { value, note: note || undefined })
-          const qs = await listQuestions(token, { project: effectiveProject, status: 'open' }).catch(() => [])
-          setQuestions(qs)
-          void load()
-        }}
-        labels={{
-          title: t.fullInbox,
-          empty: t.allClear,
-          emptySub: t.noneForTicket,
-          blocking: t.blocking,
-          advisory: t.advisory,
-          inConversation: t.inConversation,
-          awaiting: t.awaiting,
-          awaitingSub: t.awaitingSub,
-          recommends: t.recommends,
-          notePlaceholder: t.notePlaceholder,
-          send: t.send,
-          cantAnswer: t.cantAnswer,
-          close: t.close,
-          approve: t.approve,
-          reject: t.reject,
-          yes: t.yes,
-          no: t.no,
-          writeOwn: t.customDivider,
-          ownPlaceholder: t.customPlaceholder,
-          textPlaceholder: t.answerPlaceholder,
-          typeFirst: t.typeFirst,
-          sendFirst: t.sendFirst,
         }}
       />
 
