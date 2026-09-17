@@ -52,7 +52,7 @@ import { type SyncConnection } from '@/hooks/useSyncConnection'
 //
 // Titles and new sections are edited inline against that same map tree.
 import { DocumentStart } from './DocumentStart'
-import { SectionSummary } from './SectionSummary'
+import { sectionSummaries, setSectionSummary, removeSectionSummary } from '@/lib/section-collapse'
 import { insertPlanSection } from '@/lib/plan-insert'
 import type { Locale } from '@/lib/i18n'
 import { ChevronDownIcon } from 'lucide-react'
@@ -223,6 +223,8 @@ function ConnectedPlan({
   const { ydoc, provider } = connection
 
   const [tree, setTree] = useState<PlanNode[]>([])
+  const [summaries, setSummaries] = useState(() => sectionSummaries(ydoc))
+  const collapsible = useMemo(() => new Set(Object.keys(summaries)), [summaries])
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
   const [selected, setSelected] = usePersonalSelection(onSelection)
   const focused = useRef<string | null>(null)
@@ -259,6 +261,8 @@ function ConnectedPlan({
   // exactly why the projection is only replaced when the SHAPE moved.
   useEffect(() => {
     const read = () => {
+      const nextSummaries = sectionSummaries(ydoc)
+      setSummaries(prev => JSON.stringify(prev) === JSON.stringify(nextSummaries) ? prev : nextSummaries)
       const next = readPlanTree(ydoc)
       setTree((prev) => (sameTree(prev, next) ? prev : next))
     }
@@ -290,10 +294,9 @@ function ConnectedPlan({
   const activeSearchKey = activeMatch?.key
   const activeSearchKind = activeMatch?.kind
   const effectiveCollapsed = useMemo(() => {
-    if (!activeSearchSection) return collapsed
-    const revealed = new Set([activeSearchSection, ...ancestorKeys(sections, activeSearchSection)])
-    return new Set([...collapsed].filter(key => !revealed.has(key)))
-  }, [collapsed, sections, activeSearchSection])
+    const revealed = new Set(activeSearchSection ? [activeSearchSection, ...ancestorKeys(sections, activeSearchSection)] : [])
+    return new Set([...collapsed].filter(key => collapsible.has(key) && !revealed.has(key)))
+  }, [collapsed, collapsible, sections, activeSearchSection])
 
   const standings = useMemo(() => {
     const out: Record<string, Standing> = {}
@@ -845,6 +848,7 @@ function ConnectedPlan({
             sections={sections}
             selected={selected}
             onSelect={key => { onSelect(key); if (paneNarrow) setOutlineDrawer(false) }}
+            collapsible={collapsible}
             collapsed={effectiveCollapsed}
             onToggle={onToggleFold}
             standing={standings}
@@ -897,9 +901,9 @@ function ConnectedPlan({
                   showNumber={row.depth === 0 ? numbering.value.h1 : row.depth === 1 ? numbering.value.h2 : true}
                   title={row.title}
                   collapsed={folded}
-                  onToggleCollapse={() => onToggleFold(row.key)}
+                  onToggleCollapse={collapsible.has(row.key) ? () => onToggleFold(row.key) : undefined}
                   collapseLabel={folded ? railLabels.expand : railLabels.collapse}
-                  summary={<SectionSummary ydoc={ydoc} sectionId={row.key} childrenCount={flattenSections(row.children).length} locale={locale} />}
+                  summary={<p className="text-muted-foreground mb-3 whitespace-pre-wrap break-words text-sm">{summaries[row.key]}</p>}
                   onTitle={(text) => onTitle(row.key, text)}
                   onHeadingEnter={() => { focusProse(row.key, 'start') }}
                   onHeadingDown={() => focusProse(row.key, 'start')}
@@ -961,6 +965,13 @@ function ConnectedPlan({
                       color={color}
                       canWrite={canWrite}
                       maxSectionLevel={Math.min(row.depth + 2, 3)}
+                      sectionSummary={summaries[row.key]}
+                      onSetSectionSummary={summary => canWrite && setSectionSummary(ydoc, row.key, summary)}
+                      onRemoveSectionSummary={() => {
+                        if (!canWrite || !removeSectionSummary(ydoc, row.key)) return false
+                        setCollapsed(current => { const next = new Set(current); next.delete(row.key); return next })
+                        return true
+                      }}
                       onInsertSection={(level, title) => insertSection(row.key, level, title)}
                       onNavigate={target => target === 'title' ? focusTitle(row.key, 'end') :
                         !!visible[rowIndex + 1] && focusTitle(visible[rowIndex + 1]!.key, 'start')}

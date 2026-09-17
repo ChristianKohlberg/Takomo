@@ -1,14 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import type { Editor } from '@tiptap/react'
-import { closeSlashMenu, insertSlashBlock, insertSlashSection, type InsertKind, type SlashMatch } from '@/lib/slash-insert'
+import { applySlashAction, closeSlashMenu, insertSlashBlock, insertSlashSection, type InsertKind, type SlashMatch } from '@/lib/slash-insert'
 import type { Locale } from '@/lib/i18n'
 import { STR } from './strings'
 
-const choices: { kind: InsertKind; label: keyof typeof STR.en; search: string; icon: string; level?: 1 | 2 | 3 }[] = [
+const choices: { kind: InsertKind | 'collapse'; label: keyof typeof STR.en; search: string; icon: string; level?: 1 | 2 | 3 }[] = [
   { kind: 'heading1', label: 'slashHeading1', search: 'heading title überschrift h1', icon: 'H1', level: 1 },
   { kind: 'heading2', label: 'slashHeading2', search: 'heading subtitle überschrift h2', icon: 'H2', level: 2 },
   { kind: 'heading3', label: 'slashHeading3', search: 'heading überschrift h3', icon: 'H3', level: 3 },
+  { kind: 'collapse', label: 'slashCollapse', search: 'collapse summary einklappen zusammenfassung', icon: '▸' },
   { kind: 'bulletList', label: 'slashBullets', search: 'bullet list liste aufzählung', icon: '•' },
   { kind: 'orderedList', label: 'slashNumbered', search: 'numbered ordered list liste nummeriert', icon: '1.' },
   { kind: 'quote', label: 'slashQuote', search: 'quote quotation blockquote zitat', icon: '❝' },
@@ -21,14 +22,20 @@ const choices: { kind: InsertKind; label: keyof typeof STR.en; search: string; i
   { kind: 'mermaid', label: 'slashMermaid', search: 'mermaid diagram diagramm flowchart', icon: '◇' },
 ]
 
-export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection, maxSectionLevel, sectionsOnly = false }: {
+export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection, maxSectionLevel, sectionsOnly = false, sectionSummary, onSetSectionSummary, onRemoveSectionSummary }: {
   editor: Editor; match: SlashMatch; locale: Locale; menuId: string
   onInsertSection?: (level: 1 | 2 | 3, title: string) => boolean
+  sectionSummary?: string
+  onSetSectionSummary?: (summary: string) => boolean
+  onRemoveSectionSummary?: () => boolean
   sectionsOnly?: boolean
   maxSectionLevel: number
   keys: MutableRefObject<((event: KeyboardEvent) => boolean) | null>
 }) {
   const t = STR[locale]
+  const de = locale === 'de'
+  const [collapse, setCollapse] = useState(false)
+  const [summary, setSummary] = useState(sectionSummary ?? '')
   const [selected, setSelected] = useState(0)
   const [section, setSection] = useState<1 | 2 | 3 | null>(null)
   const [title, setTitle] = useState('')
@@ -41,11 +48,12 @@ export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection
   const panel = useRef<HTMLDivElement>(null)
   const direct = /^h([1-3])\s+(.*)$/is.exec(match.query)
   const query = direct ? `h${direct[1]}` : match.query
-  const results = choices.filter(c => (!sectionsOnly || c.level) && `${t[c.label]} ${c.search}`.toLocaleLowerCase().includes(query.toLocaleLowerCase().trim()))
+  const results = choices.filter(c => (!sectionsOnly || c.level) && (c.kind !== 'collapse' || !!onSetSectionSummary) && `${t[c.label]} ${c.search}`.toLocaleLowerCase().includes(query.toLocaleLowerCase().trim()))
   const active = Math.min(selected, Math.max(0, results.length - 1))
   const validSize = [rows, cols].every(n => /^\d+$/.test(n) && Number(n) >= 1 && Number(n) <= 10)
   const close = () => { closeSlashMenu(editor); editor.commands.focus() }
-  const choose = (kind: InsertKind) => {
+  const choose = (kind: InsertKind | 'collapse') => {
+    if (kind === 'collapse') { setCollapse(true); return }
     const level = choices.find(choice => choice.kind === kind)?.level
     if (level) {
       if (!onInsertSection || level > maxSectionLevel) return
@@ -60,13 +68,26 @@ export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection
     else if (kind === 'table') setTable(true)
     else if (!insertSlashBlock(editor, match, kind)) close()
   }
-  const back = () => { setTable(false); setSection(null); setFailed(false); editor.commands.focus() }
+  const back = () => { setCollapse(false); setTable(false); setSection(null); setFailed(false); editor.commands.focus() }
   const createSection = () => {
     if (!section || !onInsertSection || !title.trim() || submitting.current) return
     submitting.current = true
     try {
       if (insertSlashSection(editor, match, section, title, onInsertSection)) return
     } catch { /* Keep the title and slash query available to retry. */ }
+    submitting.current = false
+    setFailed(true)
+  }
+
+  const saveCollapse = (remove = false) => {
+    if (submitting.current || (!remove && !summary.trim())) return
+    submitting.current = true
+    try {
+      if (applySlashAction(editor, match, () => remove ? (onRemoveSectionSummary?.() ?? false) : (onSetSectionSummary?.(summary) ?? false))) {
+        editor.commands.focus()
+        return
+      }
+    } catch { /* Keep the authored summary available to retry. */ }
     submitting.current = false
     setFailed(true)
   }
@@ -94,7 +115,7 @@ export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { close(); return true }
-      if (table || section) return false
+      if (table || section || collapse) return false
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         setSelected((active + (event.key === 'ArrowDown' ? 1 : -1) + results.length) % Math.max(1, results.length)); return true
       }
@@ -103,7 +124,7 @@ export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection
       return false
     }
     keys.current = key
-    if (!table && !section && results[active]) editor.view.dom.setAttribute('aria-activedescendant', `${menuId}-${results[active].kind}`)
+    if (!table && !section && !collapse && results[active]) editor.view.dom.setAttribute('aria-activedescendant', `${menuId}-${results[active].kind}`)
     else editor.view.dom.removeAttribute('aria-activedescendant')
     return () => { keys.current = null; editor.view.dom.removeAttribute('aria-activedescendant') }
   })
@@ -112,9 +133,15 @@ export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection
 
   return createPortal(<div ref={panel} style={{ position: 'fixed', ...position }}
     className="bg-popover text-popover-foreground border-border z-50 max-h-[calc(100dvh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border p-2 shadow-lg"
-    onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (table || section) back(); else close() } }}>
+    onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (table || section || collapse) back(); else close() } }}>
     <div className="text-muted-foreground px-2 py-1 text-xs">{section ? `${t.slashSection} H${section}` : table ? t.slashTableSize : t.slashTitle}</div>
-    {section ? <form id={menuId} role="dialog" aria-label={`${t.slashSection} H${section}`} onSubmit={e => { e.preventDefault(); createSection() }} className="space-y-3 p-2">
+    {collapse ? <form id={menuId} role="dialog" aria-label={t.slashCollapse} onSubmit={e => { e.preventDefault(); saveCollapse() }} className="space-y-3 p-2">
+      <label className="text-sm">{de ? 'Zusammenfassung' : 'Summary'}<textarea autoFocus required maxLength={1000} value={summary} onChange={e => { setSummary(e.target.value); setFailed(false) }} className="border-input bg-background mt-1 w-full rounded border px-2 py-1" rows={4} /></label>
+      <p className="text-muted-foreground text-xs">{de ? 'Beschreibe, was dieser Abschnitt enthält. Der Text bleibt eingeklappt sichtbar.' : 'Describe what this section contains. This text stays visible when collapsed.'}</p>
+      {failed && <p role="alert" className="text-destructive text-sm">{de ? 'Änderung nicht gespeichert. Bitte erneut versuchen.' : 'Change was not saved. Please try again.'}</p>}
+      {sectionSummary && <button type="button" className="text-sm underline" onClick={() => saveCollapse(true)}>{de ? 'Immer aufgeklappt lassen' : 'Keep always expanded'}</button>}
+      <div className="flex justify-end gap-2"><button type="button" onClick={back} className="rounded px-2 py-1 text-sm hover:bg-accent">{t.slashBack}</button><button type="submit" disabled={!summary.trim()} className="bg-primary text-primary-foreground rounded px-3 py-1 text-sm disabled:opacity-40">{de ? 'Speichern' : 'Save'}</button></div>
+    </form> : section ? <form id={menuId} role="dialog" aria-label={`${t.slashSection} H${section}`} onSubmit={e => { e.preventDefault(); createSection() }} className="space-y-3 p-2">
       <label className="text-sm">{t.slashSectionTitle}<input autoFocus value={title} onChange={e => { setTitle(e.target.value); setFailed(false) }} className="border-input bg-background mt-1 w-full rounded border px-2 py-1" /></label>
       <p className="text-muted-foreground text-xs">{t.slashSectionHint}</p>
       {failed && <p role="alert" className="text-destructive text-sm">{t.slashSectionFailed}</p>}

@@ -100,6 +100,9 @@ export interface SectionEditorProps {
    * decision is made against the right one.
    */
   onEditor?: (editor: Editor | null) => void
+  sectionSummary?: string
+  onSetSectionSummary?: (summary: string) => boolean
+  onRemoveSectionSummary?: () => boolean
   onInsertSection?: (level: 1 | 2 | 3, title: string) => boolean
   maxSectionLevel?: number
   /** Keyboard movement at a plain paragraph boundary; returning false preserves native behavior. */
@@ -126,6 +129,7 @@ export default function SectionEditor({
   onEditor,
   label,
   onInsertSection,
+  sectionSummary, onSetSectionSummary, onRemoveSectionSummary,
   maxSectionLevel = 3,
   onNavigate,
   searchQuery = '',
@@ -352,6 +356,6 @@ export default function SectionEditor({
     {canWrite && <TableToolbar editor={editor} labels={STR[locale]} disabled={false} />}
     <EditorContent editor={editor} />
     {canWrite && reference && <SectionReferenceMenu key={reference.query} editor={editor} ydoc={ydoc} match={reference} locale={locale} menuId={referenceId} keys={referenceKeys} boundary={() => history?.manager.stopCapturing()} />}
-    {canWrite && slash && <SlashMenu key={slash.query} editor={editor} match={slash} locale={locale} menuId={slashId} keys={slashKeys} onInsertSection={onInsertSection} maxSectionLevel={maxSectionLevel} />}
+    {canWrite && slash && <SlashMenu key={slash.query} editor={editor} match={slash} locale={locale} menuId={slashId} keys={slashKeys} sectionSummary={sectionSummary} onSetSectionSummary={onSetSectionSummary} onRemoveSectionSummary={onRemoveSectionSummary} onInsertSection={onInsertSection} maxSectionLevel={maxSectionLevel} />}
   </>
 }

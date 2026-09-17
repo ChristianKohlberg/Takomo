@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import Plan, { type PlanProps } from './Plan'
+import { setSectionSummary, removeSectionSummary } from '@/lib/section-collapse'
 import { createStructureHistory } from '@/lib/plan-structure'
 import { createNode, nodesMap, readPlanTree } from '@/lib/mindmap-crdt'
 import type { Editor } from '@tiptap/react'
@@ -45,6 +46,7 @@ function setup() {
   const a = createNode(doc, { title: 'Billing', parent: null, by: 'Ada' })!
   const child = createNode(doc, { title: 'Invoices', parent: a, by: 'Ada' })!
   const b = createNode(doc, { title: 'Reports', parent: null, by: 'Ada' })!
+  for (const id of [a, child, b]) setSectionSummary(doc, id, id === child ? 'Invoice terms and payment deadlines.' : 'Authored section summary.')
   const fragment = nodesMap(doc).get(child)!.get('prose') as Y.XmlFragment
   const paragraph = new Y.XmlElement('paragraph')
   paragraph.insert(0, [new Y.XmlText('Payment deadline is thirty days.')])
@@ -75,7 +77,21 @@ function stubPaneWidth(width: number) {
 }
 
 describe('document workflow integration', () => {
-  it('folds a complete section locally and keeps the summary current', async () => {
+  it('keeps ordinary sections expanded even with old fold preferences', () => {
+    const { doc, a, child, b, props } = setup()
+    for (const id of [a, child, b]) removeSectionSummary(doc, id)
+    localStorage.setItem('takomo.plan.fold.mm-workflow', JSON.stringify([a, child, b]))
+    render(<Plan {...props} />)
+    expect(probe.editors.size).toBe(3)
+    expect(screen.queryByRole('button', { name: 'Collapse section' })).toBeNull()
+    expect((screen.getByRole('button', { name: 'Collapse all sections' }) as HTMLButtonElement).disabled).toBe(true)
+    act(() => { setSectionSummary(doc, child, 'Authored summary.') })
+    expect(screen.getAllByRole('button', { name: 'Expand section' }).length).toBeGreaterThan(0)
+    act(() => { removeSectionSummary(doc, child) })
+    expect(probe.editors.size).toBe(3)
+  })
+
+  it('folds an opted-in section locally and follows authored summary updates', async () => {
     const { doc, child, fragment, props } = setup()
     render(<Plan {...props} />)
     const before = Y.encodeStateVector(doc)
@@ -84,10 +100,12 @@ describe('document workflow integration', () => {
     const panel = screen.getAllByLabelText('Rename section')[1]!.closest('section')!
     fireEvent.click(within(panel).getByRole('button', { name: 'Collapse section' }))
     expect(probe.editors.has('Section 1.1 prose')).toBe(false)
-    expect(within(panel).getByText('Payment deadline is thirty days.')).toBeTruthy()
+    expect(within(panel).getByText('Invoice terms and payment deadlines.')).toBeTruthy()
     expect(Y.encodeStateVector(doc)).toEqual(before)
     act(() => { (fragment.get(0) as Y.XmlElement).insert(1, [new Y.XmlText(' Updated by a peer.')]) })
-    expect(within(panel).getByText(/Updated by a peer/)).toBeTruthy()
+    expect(within(panel).queryByText(/Updated by a peer/)).toBeNull()
+    act(() => { setSectionSummary(doc, child, 'Updated handwritten summary.') })
+    expect(within(panel).getByText('Updated handwritten summary.')).toBeTruthy()
     expect(JSON.parse(localStorage.getItem('takomo.plan.fold.mm-workflow')!)).toContain(child)
     fireEvent.click(within(panel).getByRole('button', { name: 'Expand section' }))
     await waitFor(() => expect(probe.editors.get('Section 1.1 prose')?.getText()).toContain('Updated by a peer.'))
@@ -98,7 +116,7 @@ describe('document workflow integration', () => {
     const panel = screen.getAllByLabelText('Rename section')[0]!.closest('section')!
     fireEvent.click(within(panel).getByRole('button', { name: 'Collapse section' }))
     expect(screen.getAllByLabelText('Rename section').map(el => el.textContent)).not.toContain('Invoices')
-    expect(within(panel).getByText('1 subsection')).toBeTruthy()
+    expect(within(panel).getByText('Authored section summary.')).toBeTruthy()
     expect(probe.editors.has('Section 1 prose')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Collapse all sections' }))
     expect(probe.editors.size).toBe(0)

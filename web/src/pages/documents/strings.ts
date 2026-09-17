@@ -5,6 +5,7 @@ import { defineStrings } from '@/lib/i18n'
 export const STR = defineStrings({
   en: {
     slashTitle: 'Insert block',
+    slashCollapse: 'Make section collapsible',
     slashHeading1: 'Section H1',
     slashHeading2: 'Section H2',
     slashHeading3: 'Section H3',
@@ -153,6 +154,7 @@ export const STR = defineStrings({
   },
   de: {
     slashTitle: 'Block einfügen',
+    slashCollapse: 'Abschnitt einklappbar machen',
     slashHeading1: 'Abschnitt H1',
     slashHeading2: 'Abschnitt H2',
     slashHeading3: 'Abschnitt H3',

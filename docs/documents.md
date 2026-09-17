@@ -305,13 +305,17 @@ buttons in the ribbon. Keyboard formatting and block commands remain available.
 
 ## Section controls, focus mode and history
 
-The chevron beside each heading folds its whole body and all nested sections. The heading,
-a short excerpt of its text, and the number of nested sections remain visible. A top-level
-H1 can therefore act as a collapsible document within the specification. Leaf sections also
-fold, and the outline's expand/collapse-all controls include them. Fold state belongs to the
-reader's browser; it never edits shared content. Excerpts update as collaborators edit hidden
-text. Search hits and section links reveal both the section and its ancestors.
+Sections stay expanded by default. To make a section collapsible, type `/collapse` in an
+empty paragraph and write a summary in the prompt. A nonempty handwritten summary is
+required; no excerpt is generated from the body. Saving adds a chevron beside the heading
+and in the outline. Folding hides the body and nested sections, leaving the heading and
+authored summary visible. An H1 can therefore act as a collapsible document within the
+specification. Run `/collapse` again to edit the summary or choose **Keep always expanded**.
 
+The summary is shared document content (`collapse_summary` on the section's CRDT node).
+Only writers configure it; readers can toggle opted-in sections. Fold preferences belong
+to each reader's browser, and expand/collapse-all only affects opted-in sections. Search,
+section links, comments, history, and proposals reveal their targets.
 
 Section actions sit behind the ellipsis beside each heading. The menu contains the accessible
 colored trust indicator and review/history actions; pending proposals remain visible. The copy
