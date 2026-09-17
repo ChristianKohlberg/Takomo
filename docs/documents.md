@@ -613,3 +613,38 @@ Legacy collaborative-document API clients can use
 and proposals while preserving document filing and metadata, emits `document.reset`,
 and refuses archived documents. The current specification UI uses the mindmap
 endpoint above.
+
+## Human comments and review inbox
+
+Ordinary comments are published immediately without a recipient. **Start review**
+collects comments privately in this browser, including comments on map nodes.
+The draft bar shows its count; **Review and send** lets the reviewer edit/remove
+comments, write a summary, and choose people once. Drafts are local to the browser,
+credential and document, survive reloads, and are not visible to collaborators or
+agents. They do not synchronize across devices; rotating credentials hides drafts
+saved under the old credential. Discarding a draft does not publish it.
+
+Sending creates one inbox review referencing the same `documentComments` threads
+that Document and Map display. It atomically publishes the comments and routing
+record. No recipients means the shared project queue. Sent feedback is readable by
+people with project access, regardless of its recipients; recipients route attention,
+not confidentiality. Existing comments can **Request an answer**, **Request a change**,
+or **Notify someone**, retaining the original conversation. Notifications assign no
+work. Change requests require one active project member as owner.
+
+Inbox → Reviews offers Needs me, Following, My requests, Shared, and All. A card
+shows the summary, creator, recipients, status and resolved-comment count. Open it
+to reply, resolve individual comments, or follow links to their document sections
+and map nodes. Replies use the original shared thread. A reply alone does not mark
+your review input complete. **My review input is complete** acknowledges only your
+participation. The requester finishes the review once its comments are resolved.
+A change owner starts work and marks it ready; the requester checks and closes it.
+An authorized human can answer and close a question. These actions never approve
+the document and never edit its prose.
+
+Reads use current CRDT threads, so direct document replies/resolutions appear in
+the inbox too. After source threads are removed, the saved review snapshot remains
+readable with a source-removed notice; actions do not recreate removed threads.
+Deleting the entire map deletes its review routing records. Request IDs deduplicate
+sends and actions by authenticated identity; action versions prevent stale updates.
+The HTTP contract is `/mindmaps/{id}/reviews` and `/document-reviews*` in OpenAPI.

@@ -389,6 +389,18 @@ impl Store {
         blob: &[u8],
         actor: &str,
     ) -> ApiResult<(i64, i64)> {
+        self.append_collab_update_with(id, blob, actor, |_| Ok(()))
+            .map(|(rows, seq, ())| (rows, seq))
+    }
+
+    /// Commit routing metadata and its collaborative comment update together.
+    pub(crate) fn append_collab_update_with<T>(
+        &self,
+        id: &str,
+        blob: &[u8],
+        actor: &str,
+        extra: impl FnOnce(&Connection) -> ApiResult<T>,
+    ) -> ApiResult<(i64, i64, T)> {
         let kind = CollabKind::from_id(id).ok_or_else(|| unknown_kind(id))?;
         if blob.is_empty() {
             return Err(update_empty(kind));
@@ -431,7 +443,8 @@ impl Store {
                 params![id],
                 |r| r.get(0),
             )?;
-            Ok((rows, seq))
+            let result = extra(tx)?;
+            Ok((rows, seq, result))
         })
     }
 

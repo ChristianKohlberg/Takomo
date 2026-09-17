@@ -1,3 +1,4 @@
+import { DocumentReviewProvider } from '@/components/documents/DocumentReview'
 import { highlightSearchPassage } from '@/lib/document-search-highlight'
 import { useDocumentNumbering } from '@/components/documents/DocumentNumberingControls'
 import { EmbeddingStatusProvider } from '@/hooks/useEmbeddingStatus'
@@ -786,7 +787,7 @@ function ConnectedPlan({
     return true
   }
   return (
-    <main ref={paneRef} className="@container/document-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <DocumentReviewProvider key={`${token}:${session.mindmap}`} token={token ?? ""} map={session.mindmap} project={project ?? ""} locale={locale} canWrite={canWrite}><main ref={paneRef} className="@container/document-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <DocumentActions focusMode={focusMode} locale={locale} canWrite={canWrite}
         canUndo={history?.canUndo ?? false} canRedo={history?.canRedo ?? false}
         onUndo={() => moveHistory('undo')} onRedo={() => moveHistory('redo')} primary={<>        <button
@@ -1008,6 +1009,6 @@ function ConnectedPlan({
           onDraftConsumed={() => {}} onClose={() => setAllComments(false)} />
       </aside>}
       </div>
-    </main>
+    </main></DocumentReviewProvider>
   )
 }

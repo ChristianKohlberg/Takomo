@@ -1,3 +1,5 @@
+import { DocumentReviewProvider } from '@/components/documents/DocumentReview'
+import { DocumentComments } from '@/components/documents/DocumentComments'
 import { focusBranch } from '@/lib/mindmap-focus'
 import { MindmapSearch, useMindmapSearch, searchFolds } from '@/components/mindmap/MindmapSearch'
 import type { Locale } from '@/lib/i18n'
@@ -300,6 +302,8 @@ function ConnectedLive({
 
   const [nodes, setNodes] = useState<MapNode[]>([])
   const [relationships, setRelationships] = useState<Relationship[]>([])
+  const [commentSection, setCommentSection] = useState<string | null>(null)
+  const [newComment, setNewComment] = useState(false)
   const [selected, setSelected] = usePersonalSelection(onSelection)
   const focused = useRef<string | null>(null)
 
@@ -1071,7 +1075,7 @@ function ConnectedLive({
   const viewingNode = viewing ? (nodes.find((n) => n.id === viewing) ?? null) : null
 
   return (
-    <>
+    <DocumentReviewProvider key={`${token}:${session.mindmap}`} token={token} map={session.mindmap} project={currentProject} locale={locale} canWrite={canWrite}>
       {/* A first branch has to come from somewhere: an empty map has no node to
           press Enter on, and the phone list has no keyboard shortcuts at all. */}
       <div className="border-b-border-soft bg-card flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5">
@@ -1083,6 +1087,7 @@ function ConnectedLive({
         >
           + {labels.branch}
         </button>
+        <button type="button" disabled={!selected} className="rounded border border-border px-2 py-1 text-sm disabled:opacity-40" onClick={() => { setCommentSection(selected); setNewComment(canWrite) }}>{locale === 'de' ? 'Knoten kommentieren' : 'Comment on node'}</button>
         {/* Talking is faster than typing and a node is one sentence, so the map
             takes dictation. Absent unless the server has it configured. */}
         {voiceEnabled && (
@@ -1124,6 +1129,7 @@ function ConnectedLive({
         )}
       </div>
 
+      {commentSection && <div className="max-h-[45dvh] shrink-0 overflow-y-auto"><DocumentComments key={commentSection} ydoc={ydoc} sectionId={commentSection} editor={null} actor={session.display} locale={locale} canWrite={canWrite} draft={newComment ? {quote:nodes.find(n=>n.id===commentSection)?.title || (locale==='de'?'Abschnitt':'Section'),start:{},end:{}} : null} onDraftConsumed={()=>setNewComment(false)} onClose={()=>setCommentSection(null)} /></div>}
       <MindmapSearch {...search} matches={scopedMatches} outsideMatches={search.matches.size - scopedMatches.size} onShowAll={exitFocus} locale={locale} onNavigate={id => { setSelected(id); setCentreNode(id) }} />
 
       {focusRoot && <nav aria-label={locale === 'de' ? 'Fokussierter Zweig' : 'Focused branch'} className="border-border flex shrink-0 flex-wrap items-center gap-1 border-b px-4 py-1 text-sm">
@@ -1291,6 +1297,6 @@ function ConnectedLive({
         }}
         labels={detachLabels}
       />
-    </>
+    </DocumentReviewProvider>
   )
 }

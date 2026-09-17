@@ -1,3 +1,4 @@
+import { useDocumentReview } from './DocumentReview'
 import { useEffect, useState } from 'react'
 import type { Editor } from '@tiptap/react'
 import type * as Y from 'yjs'
@@ -11,6 +12,7 @@ export interface DocumentCommentsProps {
   draft?: CommentAnchor | null; onDraftConsumed: () => void; onClose: () => void
 }
 export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, locale, draft, onDraftConsumed, onClose, sectionTitle, onShowThread }: DocumentCommentsProps) {
+  const review = useDocumentReview()
   const de = locale === 'de'
   const [, refresh] = useState(0)
   const [text, setText] = useState('')
@@ -35,14 +37,16 @@ export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, loc
     {global && <select aria-label={de ? 'Kommentare filtern' : 'Filter comments'} value={filter} onChange={event => setFilter(event.target.value)} className="my-2 rounded border border-border bg-background px-2 py-1 text-sm"><option value="open">{de ? 'Offen' : 'Open'} ({allThreads.filter(t => !t.resolved).length})</option><option value="resolved">{de ? 'Erledigt' : 'Resolved'} ({allThreads.filter(t => t.resolved).length})</option><option value="all">{de ? 'Alle' : 'All'} ({allThreads.length})</option></select>}
     {error && <p role="alert">{error}</p>}
     {draft && canWrite && sectionId && <form className="mt-2 space-y-2" onSubmit={event => { event.preventDefault(); attempt(() => {
-      createCommentThread(ydoc, sectionId, draft, actor, text)
+      if (review?.active) review.add(sectionId, draft, text)
+      else createCommentThread(ydoc, sectionId, draft, actor, text)
       setText(''); onDraftConsumed()
     }) }}>
       <blockquote className="max-h-28 overflow-auto border-l-2 border-border pl-2 text-sm break-words">{draft.quote}</blockquote>
       <textarea autoFocus aria-label={de ? 'Neuer Kommentar' : 'New comment'} className="w-full min-w-0 rounded border border-border bg-background p-2 text-sm" rows={2} maxLength={MAX_COMMENT_LENGTH} value={text} onChange={event => setText(event.target.value)} />
-      <div className="flex gap-2"><Button type="submit" size="sm" disabled={!text.trim()}>{de ? 'Kommentieren' : 'Post comment'}</Button><Button type="button" variant="ghost" size="sm" onClick={() => { setText(''); onDraftConsumed() }}>{de ? 'Abbrechen' : 'Cancel'}</Button></div>
+      <div className="flex gap-2"><Button type="submit" size="sm" disabled={!text.trim()}>{review?.active ? (de ? 'Zum Review hinzufügen' : 'Add to review') : (de ? 'Kommentieren' : 'Post comment')}</Button><Button type="button" variant="ghost" size="sm" onClick={() => { setText(''); onDraftConsumed() }}>{de ? 'Abbrechen' : 'Cancel'}</Button></div>
     </form>}
     {!draft && threads.length === 0 && <p className="mt-2 text-sm text-muted-foreground">{global ? (allThreads.length ? (de ? 'Keine Kommentare für diesen Filter.' : 'No comments for this filter.') : canWrite ? (de ? 'Noch keine Kommentare. Wähle Text im Dokument und dann Kommentar hinzufügen.' : 'No comments yet. Select text in the document, then Add comment.') : (de ? 'Noch keine Kommentare.' : 'No comments yet.')) : canWrite ? (de ? 'Text auswählen, um einen Kommentar hinzuzufügen.' : 'Select text to add a comment.') : (de ? 'Noch keine Kommentare.' : 'No comments yet.')}</p>}
+    {review?.draft?.comments.filter(c => global || c.section_id === sectionId).map(c => <article key={c.id} className="my-2 rounded border border-dashed border-border p-3 text-sm"><span className="text-xs text-muted-foreground">{de ? 'Privater Review-Entwurf' : 'Private review draft'}</span><blockquote>{c.anchor.quote}</blockquote><p className="whitespace-pre-wrap break-words">{c.text}</p></article>)}
     <div className={global ? "space-y-3" : "max-h-80 space-y-3 overflow-auto"}>
       {threads.map(thread => {
         const range = editor ? resolveCommentAnchor(editor, thread.anchor) : null
@@ -57,6 +61,7 @@ export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, loc
           </div>
           {thread.messages.map(m => <div key={m.id} className="mt-2 text-sm"><span className="font-medium">{m.author}</span><p className="whitespace-pre-wrap break-words">{m.text}</p></div>)}
           {canWrite && <>
+            {review && <div className="my-2 flex flex-wrap gap-3 text-xs"><button className="underline" onClick={() => review.route(thread, 'question')}>{de ? 'Antwort anfordern' : 'Request an answer'}</button><button className="underline" onClick={() => review.route(thread, 'change')}>{de ? 'Änderung anfordern' : 'Request a change'}</button><button className="underline" onClick={() => review.route(thread, 'mention')}>{de ? 'Jemanden benachrichtigen' : 'Notify someone'}</button></div>}
             <Button variant="ghost" size="sm" onClick={() => attempt(() => resolveCommentThread(ydoc, thread.id, !thread.resolved))}>{thread.resolved ? (de ? 'Wieder öffnen' : 'Reopen') : (de ? 'Erledigen' : 'Resolve')}</Button>
             {!thread.resolved && <ReplyForm locale={locale} onReply={reply => attempt(() => replyToComment(ydoc, thread.id, actor, reply))} />}
           </>}

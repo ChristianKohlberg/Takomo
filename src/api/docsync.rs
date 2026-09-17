@@ -336,6 +336,18 @@ impl Room {
         actor: &str,
         f: impl FnOnce(&Doc) -> ApiResult<T>,
     ) -> ApiResult<T> {
+        self.mutate_durable_with(f, true, |full, _| {
+            store.append_collab_update(&self.id, full, actor)
+        })
+        .await
+    }
+
+    pub(crate) async fn mutate_durable_with<T>(
+        &self,
+        f: impl FnOnce(&Doc) -> ApiResult<T>,
+        skip_noop: bool,
+        persist: impl FnOnce(&[u8], &T) -> ApiResult<(i64, i64)>,
+    ) -> ApiResult<T> {
         // Import commits must not race a reset or compaction rewriting the log.
         let _flushing = self.flushing.lock().await;
         let mut live = self.doc.lock().expect("room doc mutex");
@@ -361,16 +373,19 @@ impl Room {
         let result = f(&candidate)?;
         let update = candidate.transact().encode_state_as_update_v1(&before);
         // A retry whose receipt already exists needs no additional log row.
-        if Update::decode_v1(&update)
-            .map_err(|_| ApiError::validation("validation.collab_state", "Invalid import update."))?
-            .is_empty()
+        if skip_noop
+            && Update::decode_v1(&update)
+                .map_err(|_| {
+                    ApiError::validation("validation.collab_state", "Invalid import update.")
+                })?
+                .is_empty()
         {
             return Ok(result);
         }
         let full = candidate
             .transact()
             .encode_state_as_update_v1(&StateVector::default());
-        let (rows, _) = store.append_collab_update(&self.id, &full, actor)?;
+        let (rows, _) = persist(&full, &result)?;
         *live = candidate;
         self.rows.store(rows as u64, Ordering::SeqCst);
         self.own_appends.fetch_add(1, Ordering::SeqCst);
