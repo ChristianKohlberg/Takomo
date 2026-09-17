@@ -34,6 +34,25 @@ function type(editor: Editor, text: string) {
 function key(editor: Editor, key: string) { fireEvent.keyDown(editor.view.dom, { key }) }
 
 describe('slash insertion in a collaborative section', () => {
+  it.each([1, 2, 3])('creates H%s directly from a slash command and title', level => {
+    const { editor, onInsertSection } = mount()
+    type(editor, `/h${level} Payments and invoices`)
+    key(editor, 'Enter')
+    expect(onInsertSection).toHaveBeenCalledExactlyOnceWith(level, 'Payments and invoices')
+    expect(editor.state.doc.textContent).toBe('')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+  it('retains a direct title when creation fails and allows retry', () => {
+    const insert = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true)
+    const { editor } = mount(true, insert)
+    type(editor, '/h2 Payments'); key(editor, 'Enter')
+    expect(screen.getByRole('alert')).toBeTruthy()
+    expect(editor.state.doc.textContent).toBe('/h2 Payments')
+    key(editor, 'Enter')
+    expect(insert).toHaveBeenCalledTimes(2)
+    expect(editor.state.doc.textContent).toBe('')
+  })
+
   it('filters commands and inserts a quotation with keyboard focus', () => {
     const { editor } = mount()
     type(editor, '/quote')

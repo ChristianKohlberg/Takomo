@@ -21,9 +21,10 @@ const choices: { kind: InsertKind; label: keyof typeof STR.en; search: string; i
   { kind: 'mermaid', label: 'slashMermaid', search: 'mermaid diagram diagramm flowchart', icon: '◇' },
 ]
 
-export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection, maxSectionLevel }: {
+export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection, maxSectionLevel, sectionsOnly = false }: {
   editor: Editor; match: SlashMatch; locale: Locale; menuId: string
   onInsertSection?: (level: 1 | 2 | 3, title: string) => boolean
+  sectionsOnly?: boolean
   maxSectionLevel: number
   keys: MutableRefObject<((event: KeyboardEvent) => boolean) | null>
 }) {
@@ -38,13 +39,24 @@ export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection
   const [cols, setCols] = useState('3')
   const [position, setPosition] = useState({ left: 8, top: 8 })
   const panel = useRef<HTMLDivElement>(null)
-  const results = choices.filter(c => `${t[c.label]} ${c.search}`.toLocaleLowerCase().includes(match.query.toLocaleLowerCase().trim()))
+  const direct = /^h([1-3])\s+(.*)$/is.exec(match.query)
+  const query = direct ? `h${direct[1]}` : match.query
+  const results = choices.filter(c => (!sectionsOnly || c.level) && `${t[c.label]} ${c.search}`.toLocaleLowerCase().includes(query.toLocaleLowerCase().trim()))
   const active = Math.min(selected, Math.max(0, results.length - 1))
   const validSize = [rows, cols].every(n => /^\d+$/.test(n) && Number(n) >= 1 && Number(n) <= 10)
   const close = () => { closeSlashMenu(editor); editor.commands.focus() }
   const choose = (kind: InsertKind) => {
     const level = choices.find(choice => choice.kind === kind)?.level
-    if (level) { if (onInsertSection && level <= maxSectionLevel) setSection(level) }
+    if (level) {
+      if (!onInsertSection || level > maxSectionLevel) return
+      if (direct?.[2]?.trim()) {
+        if (submitting.current) return
+        submitting.current = true
+        try { if (insertSlashSection(editor, match, level, direct[2], onInsertSection)) return } catch { /* Retain the draft on failure. */ }
+        submitting.current = false
+        setFailed(true)
+      } else setSection(level)
+    }
     else if (kind === 'table') setTable(true)
     else if (!insertSlashBlock(editor, match, kind)) close()
   }
@@ -120,10 +132,11 @@ export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection
           onMouseDown={e => e.preventDefault()} onPointerMove={() => setSelected(index)} onClick={() => choose(choice.kind)}
           className={`flex w-full items-center gap-3 rounded px-2 py-2 text-left text-sm ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'}`}>
           <span aria-hidden className="text-muted-foreground w-6 shrink-0 text-center text-xs">{choice.icon}</span>
-          <span className="min-w-0 flex-1">{t[choice.label]}{choice.level && (!onInsertSection || choice.level > maxSectionLevel) && <span className="text-muted-foreground block text-xs">{t.slashSectionUnavailable}</span>}</span>
+          <span className="min-w-0 flex-1">{direct?.[2]?.trim() || t[choice.label]}{choice.level && (!onInsertSection || choice.level > maxSectionLevel) && <span className="text-muted-foreground block text-xs">{t.slashSectionUnavailable}</span>}</span>
         </button>)}
         {!results.length && <p role="status" className="text-muted-foreground px-2 py-3 text-sm">{t.slashEmpty}</p>}
       </div>
+      {failed && <p role="alert" className="text-destructive px-2 text-sm">{t.slashSectionFailed}</p>}
       <p className="text-muted-foreground border-border mt-1 border-t px-2 pt-2 text-[11px]">{t.slashHint}</p>
     </>}
   </div>, document.body)

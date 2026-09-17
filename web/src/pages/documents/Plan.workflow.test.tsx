@@ -75,6 +75,37 @@ function stubPaneWidth(width: number) {
 }
 
 describe('document workflow integration', () => {
+  it('folds a complete section locally and keeps the summary current', async () => {
+    const { doc, child, fragment, props } = setup()
+    render(<Plan {...props} />)
+    const before = Y.encodeStateVector(doc)
+    expect(screen.queryByText('Add section')).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Section numbers' })).toBeNull()
+    const panel = screen.getAllByLabelText('Rename section')[1]!.closest('section')!
+    fireEvent.click(within(panel).getByRole('button', { name: 'Collapse section' }))
+    expect(probe.editors.has('Section 1.1 prose')).toBe(false)
+    expect(within(panel).getByText('Payment deadline is thirty days.')).toBeTruthy()
+    expect(Y.encodeStateVector(doc)).toEqual(before)
+    act(() => { (fragment.get(0) as Y.XmlElement).insert(1, [new Y.XmlText(' Updated by a peer.')]) })
+    expect(within(panel).getByText(/Updated by a peer/)).toBeTruthy()
+    expect(JSON.parse(localStorage.getItem('takomo.plan.fold.mm-workflow')!)).toContain(child)
+    fireEvent.click(within(panel).getByRole('button', { name: 'Expand section' }))
+    await waitFor(() => expect(probe.editors.get('Section 1.1 prose')?.getText()).toContain('Updated by a peer.'))
+  })
+  it('collapses parent contents and descendants, and expands all including leaves', () => {
+    const { props } = setup()
+    render(<Plan {...props} />)
+    const panel = screen.getAllByLabelText('Rename section')[0]!.closest('section')!
+    fireEvent.click(within(panel).getByRole('button', { name: 'Collapse section' }))
+    expect(screen.getAllByLabelText('Rename section').map(el => el.textContent)).not.toContain('Invoices')
+    expect(within(panel).getByText('1 subsection')).toBeTruthy()
+    expect(probe.editors.has('Section 1 prose')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse all sections' }))
+    expect(probe.editors.size).toBe(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand all sections' }))
+    expect(probe.editors.size).toBe(3)
+  })
+
   it('opens a hybrid result inside a collapsed ancestor and selects its exact source without editing', async () => {
     const { doc, child, fragment, props } = setup()
     // Blank and whitespace-only paragraphs sit between the two lines the index stored as "thirty days.\nLate fees apply."
@@ -88,7 +119,7 @@ describe('document workflow integration', () => {
       ? { configured: false, queued: 0, running: 0, failed: 0, indexed: 0, total: 1, last_error: null, projection: 'current' }
       : { results: [{ node_id: child, title: 'Invoices', heading_path: ['Billing'], excerpt: 'Payment deadline is thirty days.', passage: 'thirty days.\nLate fees apply.', highlights: ['deadline'], match_kind: 'keyword' }], limit: 20, candidates: 1, truncated: false, mode: 'keyword', semantic_status: 'unconfigured', projection: 'current', projection_error: null })))))
     render(<Plan {...props} token="test" />)
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse section' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Collapse section' })[0]!)
     const update = vi.fn(); doc.on('update', update)
     fireEvent.keyDown(window, { key: 's', ctrlKey: true })
     const input = await screen.findByRole('combobox')
@@ -173,7 +204,7 @@ describe('document workflow integration', () => {
     render(<Plan {...props} />)
     const editor = probe.editors.get('Section 1.1 prose')!
     act(() => { editor.commands.setTextSelection({ from: 1, to: 8 }); createCommentThread(doc, child, captureCommentAnchor(editor)!, 'Ada', 'Clarify payment') })
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse section' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Collapse section' })[0]!)
     fireEvent.click(screen.getByRole('button', { name: 'All comments' }))
     expect(screen.getByText('Clarify payment')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Go to text' }))
@@ -184,13 +215,13 @@ describe('document workflow integration', () => {
   it('follows an internal reference without replacing editors and unfolds the target', async () => {
     const { child, props } = setup()
     const view = render(<Plan {...props} />)
-    const editor = probe.editors.get('Section 1 prose')!
+    const editor = probe.editors.get('Section 2 prose')!
     act(() => { editor.commands.insertContent({ type: 'sectionReference', attrs: { sectionId: child }, content: [{ type: 'text', text: 'Invoices' }] }) })
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse section' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Collapse section' })[0]!)
     const reference = view.container.querySelector(`a[data-section-id="${child}"]`)!
     fireEvent.click(reference)
     await waitFor(() => expect(screen.getByLabelText('Section 1.1 prose')).toBeTruthy())
-    expect(probe.editors.get('Section 1 prose')).toBe(editor)
+    expect(probe.editors.get('Section 2 prose')).toBe(editor)
     expect(props.onSelection).toHaveBeenLastCalledWith(child)
   })
 
@@ -342,7 +373,7 @@ it('gives the comments panel its editor when the section mounts after opening wh
   expect(probe.editors.get('Section 1.1 prose')!.state.doc.textContent).toBe('Payment deadline is thirty days.')
 })
 
-it('formats the selected prose through the shared toolbar and copies the stable section link', async () => {
+it('keeps keyboard formatting and stable section links without ribbon formatting buttons', async () => {
   const { child, props } = setup()
   const writeText = vi.fn(async (_text: string) => {})
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
@@ -350,15 +381,13 @@ it('formats the selected prose through the shared toolbar and copies the stable 
   const prose = probe.editors.get('Section 1.1 prose')!
   fireEvent.pointerDown(prose.view.dom)
   act(() => { prose.commands.setTextSelection({ from: 1, to: 8 }) })
-  const style = screen.getByRole('combobox', { name: 'Paragraph style' }) as HTMLSelectElement
-  expect(style.value).toBe('paragraph')
-  fireEvent.mouseDown(screen.getByRole('button', { name: 'Bold' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Bold' }))
+  expect(screen.queryByRole('combobox', { name: 'Paragraph style' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Bold' })).toBeNull()
+  act(() => { prose.commands.keyboardShortcut('Mod-b') })
   expect(prose.state.selection.from).toBe(1)
   expect(prose.state.selection.to).toBe(8)
   expect(prose.isActive('bold')).toBe(true)
-  fireEvent.change(style, { target: { value: 'h2' } })
-  expect(style.value).toBe('h2')
+  act(() => { prose.commands.keyboardShortcut('Mod-Alt-2') })
   expect(prose.state.doc.firstChild!.type.name).toBe('heading')
   expect(prose.state.doc.firstChild!.textContent).toBe('Payment deadline is thirty days.')
   fireEvent.click(screen.getAllByRole('button', { name: 'Copy section link' })[1]!)
@@ -372,17 +401,13 @@ it('disables stale prose tools while editing a title and restores them on return
   const prose = probe.editors.get('Section 1.1 prose')!
   fireEvent.pointerDown(prose.view.dom)
   act(() => { prose.commands.focus(); prose.commands.setTextSelection({ from: 1, to: 8 }) })
-  const style = screen.getByRole('combobox', { name: 'Paragraph style' }) as HTMLSelectElement
   const comment = screen.getByRole('button', { name: 'Add comment' }) as HTMLButtonElement
-  await waitFor(() => expect(style.disabled).toBe(false))
   expect(comment.disabled).toBe(false)
   const title = screen.getAllByLabelText('Rename section')[1]!
   act(() => { titleCaret(title, true) })
-  expect(style.disabled).toBe(true)
   expect(comment.disabled).toBe(true)
   fireEvent.keyDown(title, { key: 'Enter' })
   await waitFor(() => expect(document.activeElement).toBe(prose.view.dom))
-  expect(style.disabled).toBe(false)
   // Enter places a collapsed caret at the beginning, so commenting waits for
   // an actual prose selection rather than retaining the old title-era range.
   expect(comment.disabled).toBe(true)

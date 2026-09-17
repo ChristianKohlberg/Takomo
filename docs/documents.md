@@ -285,8 +285,8 @@ returns to the command menu. Mermaid, PlantUML, D2 and Wireframe insertions star
 editable source. Their shared Code / View controls render through the configured private
 Kroki service; see [diagrams and wireframes](diagrams.md) for setup, limits and offline behavior.
 
-`/h1`, `/h2` and `/h3` ask for a section title and create a real shared section at the
-current section boundary. H1 creates a top-level section; H2 and H3 nest under the appropriate
+`/h1 Title`, `/h2 Title` and `/h3 Title` create a real shared section on Enter at the
+current section boundary. A bare `/h1`, `/h2` or `/h3` opens a title prompt. H1 creates a top-level section; H2 and H3 nest under the appropriate
 preceding parent. Levels that would skip a parent remain visible with an explanation.
 Creation focuses the new section body and leaves surrounding prose in the original section.
 Back or Escape keeps the slash query; a refused creation retains the title for retry.
@@ -299,7 +299,19 @@ replaces it, and insertion uses the current section's normal collaboration and u
 If the trigger is removed or the caret leaves it, the menu closes. A stale choice cannot
 replace text changed by another collaborator. Read-only viewers have no insertion menu.
 
+An empty document offers the same slash entry for its first H1; the draft stays local until
+creation succeeds. There are no repeated inline Add section rows or heading/formatting
+buttons in the ribbon. Keyboard formatting and block commands remain available.
+
 ## Section controls, focus mode and history
+
+The chevron beside each heading folds its whole body and all nested sections. The heading,
+a short excerpt of its text, and the number of nested sections remain visible. A top-level
+H1 can therefore act as a collapsible document within the specification. Leaf sections also
+fold, and the outline's expand/collapse-all controls include them. Fold state belongs to the
+reader's browser; it never edits shared content. Excerpts update as collaborators edit hidden
+text. Search hits and section links reveal both the section and its ancestors.
+
 
 Section actions sit behind the ellipsis beside each heading. The menu contains the accessible
 colored trust indicator and review/history actions; pending proposals remain visible. The copy

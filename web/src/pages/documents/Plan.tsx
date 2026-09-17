@@ -1,5 +1,5 @@
 import { highlightSearchPassage } from '@/lib/document-search-highlight'
-import { DocumentNumberingControls, useDocumentNumbering } from '@/components/documents/DocumentNumberingControls'
+import { useDocumentNumbering } from '@/components/documents/DocumentNumberingControls'
 import { EmbeddingStatusProvider } from '@/hooks/useEmbeddingStatus'
 import { DocumentEmbeddingStatus } from '@/components/documents/DocumentEmbeddingStatus'
 import type { ServerSync } from '@/lib/save-status'
@@ -8,7 +8,6 @@ import { locatedPassageRange, type SearchResult } from '@/lib/hybrid-search'
 import { DocumentSectionReferenceButton } from '@/components/documents/DocumentSectionReferenceButton'
 import { DocumentActions } from '@/components/documents/DocumentActions'
 import { CopySectionLink } from '@/components/documents/CopySectionLink'
-import { DocumentFormattingToolbar } from '@/components/documents/DocumentFormattingToolbar'
 import { DocumentComments } from '@/components/documents/DocumentComments'
 import { DocumentCommentButton } from '@/components/documents/DocumentCommentButton'
 import { resolveCommentAnchor, type CommentThread, type CommentAnchor } from '@/lib/document-comments'
@@ -52,7 +51,8 @@ import { type SyncConnection } from '@/hooks/useSyncConnection'
 // proposal, never erased.
 //
 // Titles and new sections are edited inline against that same map tree.
-import { InlineSection } from '@/components/documents/InlineSection'
+import { DocumentStart } from './DocumentStart'
+import { SectionSummary } from './SectionSummary'
 import { insertPlanSection } from '@/lib/plan-insert'
 import type { Locale } from '@/lib/i18n'
 import { ChevronDownIcon } from 'lucide-react'
@@ -291,7 +291,7 @@ function ConnectedPlan({
   const activeSearchKind = activeMatch?.kind
   const effectiveCollapsed = useMemo(() => {
     if (!activeSearchSection) return collapsed
-    const revealed = new Set(ancestorKeys(sections, activeSearchSection))
+    const revealed = new Set([activeSearchSection, ...ancestorKeys(sections, activeSearchSection)])
     return new Set([...collapsed].filter(key => !revealed.has(key)))
   }, [collapsed, sections, activeSearchSection])
 
@@ -421,7 +421,7 @@ function ConnectedPlan({
       // Unfold whatever hides it first: scrolling to a section that is not drawn
       // is worse than not scrolling.
       setCollapsed((current) => {
-        const hiding = ancestorKeys(sections, key).filter((k) => current.has(k))
+        const hiding = [key, ...ancestorKeys(sections, key)].filter((k) => current.has(k))
         if (hiding.length === 0) return current
         const next = new Set(current)
         for (const k of hiding) next.delete(k)
@@ -452,11 +452,13 @@ function ConnectedPlan({
 
   const onToggleHistory = useCallback((key: string) => {
     const open = !openHistory.has(key)
+    if (open) setCollapsed(current => { const next = new Set(current); next.delete(key); return next })
     onHistoryOpen?.(key, open)
     setOpenHistory(current => { const next = new Set(current); if (open) next.add(key); else next.delete(key); return next })
   }, [openHistory, onHistoryOpen])
 
   const onToggleProposals = useCallback((key: string) => {
+    setCollapsed(current => { const next = new Set(current); next.delete(key); return next })
     setOpenProposals((current) => {
       const next = new Set(current)
       if (!next.delete(key)) next.add(key)
@@ -740,7 +742,7 @@ function ConnectedPlan({
     const result = history.move(id, target, placement)
     if (result.ok) {
       const freshSections = planSections(readPlanTree(ydoc))
-      setCollapsed(current => new Set([...current].filter(key => !ancestorKeys(freshSections, id).includes(key))))
+      setCollapsed(current => new Set([...current].filter(key => ![id, ...ancestorKeys(freshSections, id)].includes(key))))
       setSelected(id)
       setNotice({ text: locale === 'de' ? 'Abschnitt verschoben' : 'Section moved', undo: true })
       onMoved?.(id)
@@ -752,7 +754,7 @@ function ConnectedPlan({
     const key = direction === 'undo' ? history.undoSection : history.redoSection
     const result = history[direction]()
     if (result.ok && key) {
-      const ancestors = ancestorKeys(planSections(readPlanTree(ydoc)), key)
+      const ancestors = [key, ...ancestorKeys(planSections(readPlanTree(ydoc)), key)]
       setCollapsed(current => new Set([...current].filter(id => !ancestors.includes(id))))
       setSelected(key)
       onMoved?.(key)
@@ -762,6 +764,7 @@ function ConnectedPlan({
   const focusProse = (key: string, position: 'start' | 'end'): boolean => {
     if (!canWrite) return false
     setSelected(key)
+    setCollapsed(current => { const next = new Set(current); next.delete(key); return next })
     const editor = editors.current.get(key)
     if (editor) editor.commands.focus(position)
     else pendingBoundaryFocus.current = { key, position }
@@ -801,8 +804,7 @@ function ConnectedPlan({
           />
           <span>{railLabels.outline}</span>
         </button>
-<DocumentNumberingControls {...numbering} locale={locale} />
-<DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} />{token && <DocumentEmbeddingStatus locale={locale} canSync={canWrite} />}</>} >
+        {token && <DocumentEmbeddingStatus locale={locale} canSync={canWrite} />}</>} >
         {token && <DocumentHybridSearch key={`${session.mindmap}:${token}`} token={token} map={session.mindmap} userId={userId} project={project} locale={locale} canSync={canWrite} onNavigate={result => {
           if (!rows.some(section => section.key === result.node_id)) {
             setNotice({ text: locale === 'de' ? 'Dieser Abschnitt wurde entfernt. Bitte erneut suchen.' : 'This section was removed. Search again.' })
@@ -870,7 +872,7 @@ function ConnectedPlan({
         {rows.length === 0 ? (
           <div className="text-muted-foreground py-8 text-[13.5px]">
             {canWrite ? (
-              <InlineSection locale={locale} maxLevel={1} onInsert={(level, title) => insertSection(null, level, title)} />
+              <DocumentStart locale={locale} onInsert={(level, title) => insertSection(null, level, title)} />
             ) : <p>{labels.empty}</p>}
           </div>
         ) : (
@@ -881,9 +883,9 @@ function ConnectedPlan({
           // column is left once the outline has taken its share.
           <div className="document-appearance document-page mx-auto min-w-0"
             style={documentAppearanceStyle(appearance)}>
-            {canWrite && <InlineSection locale={locale} maxLevel={1} onInsert={(level, title) => insertSection(null, level, title)} />}
             {visible.map((row, rowIndex) => {
-              const mounted = near === null || near.has(row.key) || row.key === selected || row.key === activeMatch?.sectionId
+              const folded = effectiveCollapsed.has(row.key)
+              const mounted = !folded && (near === null || near.has(row.key) || row.key === selected || row.key === activeMatch?.sectionId)
               const fragment = mounted ? (fragments.get(row.key) ?? null) : null
               const preview = previews.get(row.key) ?? ''
               const offered = proposalsFor.get(row.key) ?? []
@@ -894,6 +896,10 @@ function ConnectedPlan({
                   depth={row.depth}
                   showNumber={row.depth === 0 ? numbering.value.h1 : row.depth === 1 ? numbering.value.h2 : true}
                   title={row.title}
+                  collapsed={folded}
+                  onToggleCollapse={() => onToggleFold(row.key)}
+                  collapseLabel={folded ? railLabels.expand : railLabels.collapse}
+                  summary={<SectionSummary ydoc={ydoc} sectionId={row.key} childrenCount={flattenSections(row.children).length} locale={locale} />}
                   onTitle={(text) => onTitle(row.key, text)}
                   onHeadingEnter={() => { focusProse(row.key, 'start') }}
                   onHeadingDown={() => focusProse(row.key, 'start')}
@@ -902,7 +908,7 @@ function ConnectedPlan({
                   headingLink={<CopySectionLink href={new URL(specificationLink(project, 'document', row.key), window.location.origin).href} locale={locale} />}
                   headingActions={<>
                     {ticketLinksFor?.(row.key)}
-                    <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => { setSelected(row.key); setComments({ section: row.key, draft: null }) }}>
+                    <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => { onSelect(row.key); setComments({ section: row.key, draft: null }) }}>
                       {locale === 'de' ? 'Kommentare' : 'Comments'}
                     </button>
                   </>}
@@ -978,7 +984,6 @@ function ConnectedPlan({
                     editor={commentsEditor} actor={session.display} locale={locale} canWrite={canWrite}
                     draft={comments.draft} onDraftConsumed={() => setComments(current => current?.section === row.key ? { section: row.key, draft: null } : current)}
                     onClose={() => setComments(null)} />}
-                  {canWrite && <InlineSection locale={locale} maxLevel={Math.min(row.depth + 2, 3)} onInsert={(level, title) => insertSection(row.key, level, title)} />}
                 </SectionPanel>
               )
             })}

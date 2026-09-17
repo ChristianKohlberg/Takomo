@@ -101,7 +101,7 @@ export function OutlineRail({
   const suppressClick = useRef(false)
   const cancelHold = () => { if (hold.current) clearTimeout(hold.current.timer); hold.current = null }
   useEffect(() => () => { if (hold.current) clearTimeout(hold.current.timer) }, [onMove])
-  const branches = flattenSections(sections).filter(section => section.children.length)
+  const branches = flattenSections(sections)
   const instructions = useId()
   const de = locale === 'de'
   const focusKey = rows.some(row => row.key === focused) ? focused : rows.some(row => row.key === selected) ? selected : rows[0]?.key
@@ -141,7 +141,7 @@ export function OutlineRail({
         const siblings = parent ? flattenSections(sections).find(row => row.key === parent)!.children : sections
         const active = section.key === selected
         const hasChildren = section.children.length > 0
-        const folded = hasChildren && collapsed.has(section.key)
+        const folded = collapsed.has(section.key)
         const hidden = folded ? sectionCount(section) : 0
         const waiting = pending
           ? folded
@@ -157,7 +157,7 @@ export function OutlineRail({
             aria-level={section.depth + 1}
             aria-posinset={siblings.findIndex(row => row.key === section.key) + 1}
             aria-setsize={siblings.length}
-            aria-expanded={hasChildren ? !folded : undefined}
+            aria-expanded={!folded}
             aria-selected={active}
             tabIndex={section.key === focusKey ? 0 : -1}
             onFocus={() => setFocused(section.key)}
@@ -220,7 +220,7 @@ export function OutlineRail({
             // Tailwind cannot spell an arbitrary one without a class per level.
             style={{ paddingLeft: `${2 + Math.min(section.depth, 4) * 12}px` }}
           >
-            {hasChildren ? (
+            {(
               <button
                 type="button"
                 tabIndex={-1}
@@ -231,8 +231,6 @@ export function OutlineRail({
               >
 <ChevronRight aria-hidden="true" className={cn("size-3.5 transition-transform", !folded && "rotate-90")} />
               </button>
-            ) : (
-              <span className="w-4 flex-none" aria-hidden="true" />
             )}
 
             <span className="flex w-2.5 flex-none justify-center" aria-hidden="true">
@@ -266,7 +264,7 @@ export function OutlineRail({
               </span>
             </button>
 
-            {folded && (
+            {folded && hidden > 0 && (
               <span
                 className="text-muted-foreground flex-none font-mono text-[10px]"
                 title={labels.folded.replace('{n}', String(hidden))}
