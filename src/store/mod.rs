@@ -18,6 +18,7 @@ pub mod search;
 pub use document_appearance::{DocumentAppearance, DocumentAppearanceOverrides, DocumentTemplate};
 mod codebase_import;
 pub mod document_chat;
+pub mod document_reviews;
 mod environments;
 mod events;
 mod helpers;
@@ -187,6 +188,7 @@ impl Store {
             )?;
         }
         conn.execute_batch(include_str!("document_chat.sql"))?;
+        conn.execute_batch(include_str!("document_reviews.sql"))?;
         conn.execute_batch(include_str!("work_lanes.sql"))?;
         conn.execute_batch(include_str!("lane_organizer.sql"))?;
         bugs::migrate(&conn)?;

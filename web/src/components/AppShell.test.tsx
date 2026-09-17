@@ -1,3 +1,4 @@
+import { listReviews } from '@/lib/document-reviews'
 import { StrictMode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -8,6 +9,7 @@ import { loadToken } from '@/lib/session'
 import { api } from '@/lib/api'
 import { ProjectUpdatesContext } from '@/hooks/useProjectUpdates'
 
+vi.mock('@/lib/document-reviews', () => ({ listReviews: vi.fn().mockResolvedValue({ total: 0 }) }))
 vi.mock('@/lib/questions', () => ({ listQuestions: vi.fn() }))
 vi.mock('@/lib/session', () => ({ loadToken: vi.fn(() => ''), isAuthError: (error: { auth?: boolean }) => !!error?.auth }))
 vi.mock('@/lib/api', () => ({ api: vi.fn() }))
@@ -185,4 +187,12 @@ it('polls only as disconnected fallback and skips hidden tabs', async () => {
   expect(listQuestions).toHaveBeenCalledTimes(2)
   visibility.mockRestore()
   vi.useRealTimers()
+})
+
+it('adds addressed document reviews to the inbox badge even with an explicit question count', async () => {
+ vi.mocked(loadToken).mockReturnValue('token')
+ vi.mocked(listReviews).mockResolvedValueOnce({total:2} as never)
+ mount(false, false, 3)
+ await screen.findByText('5')
+ expect(listQuestions).not.toHaveBeenCalled()
 })

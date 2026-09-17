@@ -1,3 +1,4 @@
+import { ReviewInbox } from '@/components/inbox/ReviewInbox'
 import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 // /inbox — where an agent's question reaches a person.
 //
@@ -78,6 +79,7 @@ export function App() {
   const navigate = useNavigate()
   const { toast } = useToast()
 
+  const [reviewsTab, setReviewsTab] = useState(() => new URLSearchParams(window.location.search).get('tab') === 'reviews')
   const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
   const [project, setProject] = useState(() => loadProject())
@@ -351,15 +353,17 @@ export function App() {
     // The filters ride along in the SEARCH half, written by the same effect:
     // two effects writing the same URL raced, and whichever ran second dropped
     // the other's half.
+    const query = new URLSearchParams(writeView(view))
+    if (reviewsTab) query.set('tab', 'reviews')
     navigate(
       {
         pathname: '/inbox',
-        search: writeView(view),
+        search: query.toString(),
         hash: selectedId ? 'q=' + selectedId : '',
       },
       { replace: true },
     )
-  }, [selectedId, view, navigate])
+  }, [selectedId, view, navigate, reviewsTab])
 
   useEffect(() => {
     if (!selected || !token) {
@@ -379,6 +383,7 @@ export function App() {
   // mouse. Ignored while typing, or ↵ would submit a decision mid-sentence.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (reviewsTab) return
       const tag = (e.target as HTMLElement | null)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
       if (e.key === 'j' || e.key === 'k') {
@@ -391,7 +396,7 @@ export function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [walkable, selected])
+  }, [walkable, selected, reviewsTab])
 
   const toggleEpic = useCallback((epic: string) => {
     setCollapsed((cur) => {
@@ -545,12 +550,14 @@ export function App() {
       <AppHeader
         title={t.inbox}
       >
-        <span className="text-muted-foreground mr-1 hidden text-[11.5px] md:inline">{t.kbd}</span>
-        <Button variant="outline" size="icon" title="Refresh" onClick={() => void fetchAll()}>
+        {!reviewsTab && <span className="text-muted-foreground mr-1 hidden text-[11.5px] md:inline">{t.kbd}</span>}
+        <Button hidden={reviewsTab} variant="outline" size="icon" title="Refresh" onClick={() => void fetchAll()}>
           ↻
         </Button>
       </AppHeader>
 
+      <nav className="flex gap-2 border-b border-border-soft px-4 py-2" aria-label={lang==='de'?'Posteingangstyp':'Inbox type'}><Button variant={reviewsTab?'ghost':'secondary'} size="sm" onClick={()=>setReviewsTab(false)}>{lang==='de'?'Ticketfragen':'Ticket questions'}</Button><Button variant={reviewsTab?'secondary':'ghost'} size="sm" onClick={()=>setReviewsTab(true)}>Reviews</Button></nav>
+      {reviewsTab ? <ReviewInbox key={`${token}:${project}`} token={token} project={project} locale={lang} canWrite={canAnswer && me.scopes.includes('write')} admin={me.scopes.includes('admin')} /> : <>
       {/* The filters, in their own row rather than in the shared header — see
           components/inbox/FilterBar.tsx. On a phone the reading pane REPLACES
           the list, so the bar goes with the list it filters. */}
@@ -820,6 +827,7 @@ export function App() {
         )}
       </main>
 
+      </>}
       <UndoSnackbar
         pending={queue.pending}
         now={queue.now}

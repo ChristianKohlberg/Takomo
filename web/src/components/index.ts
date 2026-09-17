@@ -280,3 +280,7 @@ export { GithubSettings } from './settings/GithubSettings'
 export { RepositoryFields } from './settings/RepositoryFields'
 export { NewProjectWizard } from './settings/NewProjectWizard'
 export { ProjectRepository } from './settings/ProjectRepository'
+
+export { DocumentReviewProvider, ReviewPeople } from "./documents/DocumentReview"
+
+export { ReviewInbox } from "./inbox/ReviewInbox"
