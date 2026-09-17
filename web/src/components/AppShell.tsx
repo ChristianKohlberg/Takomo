@@ -1,3 +1,4 @@
+import { listReviews } from '@/lib/document-reviews'
 // The frame every surface sits in: the nav rail on the left, the page to the
 // right of it.
 //
@@ -37,14 +38,14 @@ export function AppShell({ rail, children, lang, onLang, hideRail = false, conte
   const [inbox, setInbox] = useState<{ scope: string; count?: number } | null>(null)
   const scope = `${token}:${project}`
   useLiveRefresh({
-    token, project, scope, topics: ['inbox'], enabled: explicitCount == null,
+    token, project, scope: `${scope}:${explicitCount ?? 'auto'}`, topics: ['inbox'],
     onError: () => setInbox({ scope }),
     load: async signal => {
-      const questions = await listQuestions(token, { project, status: 'open' })
-      if (!signal.aborted) setInbox({ scope, count: questions.length })
+      const [questions, reviews] = await Promise.all([explicitCount == null ? listQuestions(token, { project, status: 'open' }) : Promise.resolve(null), listReviews(token, project, 'needs_me', 0, signal)])
+      if (!signal.aborted) setInbox({ scope, count: (explicitCount ?? questions?.length ?? 0) + reviews.total })
     },
   })
-  const navigation = { ...rail, badges: { ...rail.badges, inbox: explicitCount ?? (inbox?.scope === scope ? inbox.count : undefined) } }
+  const navigation = { ...rail, badges: { ...rail.badges, inbox: token ? (inbox?.scope === scope ? inbox.count : undefined) : explicitCount } }
   return (
     <DiagramContext value={{ token, project }}>
     <div className="flex h-dvh flex-col overflow-hidden md:flex-row">

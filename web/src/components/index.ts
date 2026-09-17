@@ -282,3 +282,6 @@ export { NewProjectWizard } from './settings/NewProjectWizard'
 export { ProjectRepository } from './settings/ProjectRepository'
 
 export { RouteError } from './RouteError'
+export { DocumentReviewProvider, ReviewPeople } from "./documents/DocumentReview"
+
+export { ReviewInbox } from "./inbox/ReviewInbox"

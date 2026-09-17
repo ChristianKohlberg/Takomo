@@ -24,6 +24,8 @@ fn rule(table: &str) -> Option<(&'static str, &'static str)> {
         // Readiness can depend on a blocker in another project.
         "tickets" | "deps" => ("''", "tickets"),
         "workflow_states" => ("''", "projects,tickets"),
+        "document_reviews" => ("@.project", "inbox,document"),
+        "document_review_actions" | "document_review_responses" => ("(SELECT project FROM document_reviews WHERE id=@.review)", "inbox,document"),
         "questions" => ("@.project", "inbox"),
         "question_messages" => ("(SELECT project FROM questions WHERE id=@.question)", "inbox"),
         "mindmaps" => ("@.project", "document,trace,tickets,agent,history,search"),
@@ -59,7 +61,10 @@ fn rule(table: &str) -> Option<(&'static str, &'static str)> {
 fn cascade_owner(table: &str) -> bool {
     matches!(
         table,
-        "question_messages"
+        "document_reviews"
+            | "document_review_actions"
+            | "document_review_responses"
+            | "question_messages"
             | "mindmap_nodes"
             | "document_agent_settings"
             | "specification_versions"
