@@ -292,9 +292,9 @@ pub async fn settings_page() -> impl axum::response::IntoResponse {
 
 /// A strong ETag over the asset body.
 ///
-/// The assets have stable names, so a client cannot tell one build's `app.js`
-/// from the next by URL — the ETag is what does it. `sha2` is already a
-/// dependency (token hashing), so this costs nothing new, and 16 hex characters
+/// Asset URLs include content hashes to isolate loaded module graphs. ETags
+/// additionally allow conditional requests for any embedded asset. `sha2` is
+/// already a dependency (token hashing), and 16 hex characters
 /// of SHA-256 is far past what a cache validator needs.
 fn etag_for(body: &[u8]) -> String {
     use sha2::{Digest, Sha256};

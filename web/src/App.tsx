@@ -18,6 +18,7 @@
 // contract.
 import { lazy, Suspense, useEffect } from 'react'
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router'
+import { RouteError } from './components/RouteError'
 import { App as BoardApp } from './pages/board/App'
 import { App as EnvironmentsApp } from './pages/environments/App'
 import { App as InboxApp } from './pages/inbox/App'
@@ -79,6 +80,7 @@ function Root() {
 const router = createBrowserRouter([
   {
     element: <Root />,
+    errorElement: <RouteError />,
     children: [
       { path: '/bugs', element: <BugsApp /> },
       { path: '/board', element: <BoardApp key="board" /> },

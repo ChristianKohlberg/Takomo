@@ -17,9 +17,8 @@
 //
 // Two things this file must guarantee for the Rust side to compile at all:
 //
-//   * STABLE asset names. The server serves assets by name with content hashing
-//     turned off deliberately; cache correctness is handled by ETag revalidation,
-//     not by the filename.
+//   * CONTENT-HASHED asset names. An open tab must never load a new release
+//     under an old module URL: ETags cannot replace modules already in memory.
 //   * EVERYTHING FLAT UNDER assets/. `build.rs` embeds that one directory and the
 //     server exposes it as `/assets/{file}`, so a nested directory would be
 //     emitted, referenced by index.html, and then 404 at runtime.
@@ -152,17 +151,15 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        // No content hashes — see the header. The server sends an ETag instead.
-        entryFileNames: 'assets/app.js',
+        // Hash every chunk, including its dependency graph, to isolate releases.
+        entryFileNames: 'assets/app-[hash].js',
         // The bundler emits its own small runtime as a separate chunk and does
         // NOT route it through manualChunks, so it cannot be folded into vendor.
-        // It is renamed here instead: the served path stays `assets/runtime.js`
-        // whatever the bundler calls it internally, so neither Rust nor the CSP
-        // ends up encoding "rolldown".
+        // Keep the runtime's readable prefix while preserving release isolation.
         chunkFileNames: (info) =>
-          info.name.includes('runtime') ? 'assets/runtime.js' : 'assets/[name].js',
+          info.name.includes('runtime') ? 'assets/runtime-[hash].js' : 'assets/[name]-[hash].js',
         assetFileNames: (info) =>
-          info.names?.some((n) => n.endsWith('.css')) ? 'assets/app.css' : 'assets/[name][extname]',
+          info.names?.some((n) => n.endsWith('.css')) ? 'assets/app-[hash].css' : 'assets/[name]-[hash][extname]',
         // One vendor chunk for what every route shares. This is the whole point
         // of the earlier change: React was previously inlined into four
         // documents.
