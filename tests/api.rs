@@ -362,14 +362,18 @@ fn assert_app_shell(path: &str, page: &str) {
         page.contains("id=\"root\""),
         "{path} is not the web build — no React mount point in the served document"
     );
-    for asset in ["/assets/app.js", "/assets/vendor.js", "/assets/app.css"] {
+    for asset in [
+        common::spa_asset("app", ".js"),
+        common::spa_asset("vendor", ".js"),
+        common::spa_asset("app", ".css"),
+    ] {
         assert!(
             page.contains(asset),
             "{path} does not reference {asset} — the shell is inert without it"
         );
     }
     // Everything it references must be same-origin and embedded. A CDN or a
-    // hashed filename would 404 against a binary that embeds fixed paths.
+    // foreign origin would break the embedded, same-origin application.
     assert!(
         !page.contains("http://") && !page.contains("https://"),
         "{path} references an absolute URL — every asset must be same-origin and \
@@ -415,10 +419,10 @@ async fn answer_link_page_ships_the_grant_view_and_the_renderer() {
 async fn app_assets_are_served_with_correct_types() {
     let app = TestApp::spawn().await;
     for (path, ct) in [
-        ("/assets/app.js", "text/javascript"),
-        ("/assets/vendor.js", "text/javascript"),
-        ("/assets/runtime.js", "text/javascript"),
-        ("/assets/app.css", "text/css"),
+        (common::spa_asset("app", ".js"), "text/javascript"),
+        (common::spa_asset("vendor", ".js"), "text/javascript"),
+        (common::spa_asset("runtime", ".js"), "text/javascript"),
+        (common::spa_asset("app", ".css"), "text/css"),
     ] {
         let resp = app.request(Method::GET, path).send().await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "{path} should serve");
@@ -486,7 +490,7 @@ async fn unknown_asset_names_404_and_cannot_traverse() {
 async fn app_assets_revalidate_by_etag() {
     let app = TestApp::spawn().await;
     let resp = app
-        .request(Method::GET, "/assets/app.js")
+        .request(Method::GET, common::spa_asset("app", ".js"))
         .send()
         .await
         .unwrap();
@@ -514,7 +518,7 @@ async fn app_assets_revalidate_by_etag() {
 
     // The whole point: a matching validator costs a round trip and no body.
     let again = app
-        .request(Method::GET, "/assets/app.js")
+        .request(Method::GET, common::spa_asset("app", ".js"))
         .header(reqwest::header::IF_NONE_MATCH, &etag)
         .send()
         .await
@@ -532,7 +536,7 @@ async fn app_assets_revalidate_by_etag() {
 
     // A stale validator must serve the new bytes rather than a spurious 304.
     let changed = app
-        .request(Method::GET, "/assets/app.js")
+        .request(Method::GET, common::spa_asset("app", ".js"))
         .header(reqwest::header::IF_NONE_MATCH, "\"stale\"")
         .send()
         .await
@@ -557,7 +561,7 @@ async fn app_assets_revalidate_by_etag() {
 async fn a_weak_validator_still_revalidates() {
     let app = TestApp::spawn().await;
     let strong = app
-        .request(Method::GET, "/assets/vendor.js")
+        .request(Method::GET, common::spa_asset("vendor", ".js"))
         .send()
         .await
         .unwrap()
@@ -574,7 +578,7 @@ async fn a_weak_validator_still_revalidates() {
     // Exactly what a browser sends back from behind a compressing CDN.
     let weakened = format!("W/{strong}");
     let resp = app
-        .request(Method::GET, "/assets/vendor.js")
+        .request(Method::GET, common::spa_asset("vendor", ".js"))
         .header(reqwest::header::IF_NONE_MATCH, &weakened)
         .send()
         .await
@@ -588,7 +592,7 @@ async fn a_weak_validator_still_revalidates() {
 
     // And a weak validator for DIFFERENT content must still miss.
     let other = app
-        .request(Method::GET, "/assets/app.js")
+        .request(Method::GET, common::spa_asset("app", ".js"))
         .header(reqwest::header::IF_NONE_MATCH, &weakened)
         .send()
         .await

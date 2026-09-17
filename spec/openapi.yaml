@@ -7269,19 +7269,18 @@ paths:
         `web/vite.config.ts` enforces the one shape the route requires: everything
         flat under `assets/`, since this path has a single segment.
 
-        The filenames carry no content hash, deliberately: the server embeds and
-        serves them by name, which needs those names stable across builds within a
-        deploy. Cache correctness
-        therefore comes from a strong `ETag` over the body plus
-        `Cache-Control: public, max-age=0, must-revalidate`, so a browser
-        revalidates and normally gets a `304` with no body. `immutable` would be
-        wrong here — it is only safe when the URL changes with the content.
+        JavaScript and CSS filenames include a content hash, so an open browser
+        tab cannot combine modules from different deployments. A chunk removed
+        by a deployment returns 404; the application offers a reload recovery
+        screen. Assets retain a strong `ETag` over the body and
+        `Cache-Control: public, max-age=0, must-revalidate`; matching validators
+        receive `304` with no body.
       security: []
       parameters:
         - name: file
           in: path
           required: true
-          description: 'An embedded asset name, e.g. `app.js`, `vendor.js`, `runtime.js`, `app.css`, or a code-split route chunk. Deliberately not an enum: the set depends on what the bundler emitted.'
+          description: 'An embedded asset name, e.g. `app-<hash>.js`, `vendor-<hash>.js`, `runtime-<hash>.js`, `app-<hash>.css`, or a code-split route chunk. Deliberately not an enum: the set depends on what the bundler emitted.'
           schema: { type: string }
         - name: If-None-Match
           in: header

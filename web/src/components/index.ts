@@ -280,3 +280,5 @@ export { GithubSettings } from './settings/GithubSettings'
 export { RepositoryFields } from './settings/RepositoryFields'
 export { NewProjectWizard } from './settings/NewProjectWizard'
 export { ProjectRepository } from './settings/ProjectRepository'
+
+export { RouteError } from './RouteError'

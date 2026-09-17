@@ -251,7 +251,7 @@ impl TestApp {
     /// started failing with nothing edited.
     pub async fn app_bundle(&self) -> String {
         let resp = self
-            .request(Method::GET, "/assets/app.js")
+            .request(Method::GET, spa_asset("app", ".js"))
             .send()
             .await
             .expect("the app bundle should be served");
@@ -786,4 +786,13 @@ pub fn simple_workflow() -> Value {
     let yaml =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_norway::from_str(&yaml).expect("workflows/simple.yaml is a workflow document")
+}
+
+/// Read entry asset URLs from the same generated shell embedded by the server.
+pub fn spa_asset(stem: &str, extension: &str) -> &'static str {
+    let prefix = format!("/assets/{stem}-");
+    include_str!("../../web/dist/index.html")
+        .split('"')
+        .find(|path| path.starts_with(&prefix) && path.ends_with(extension))
+        .expect("hashed entry asset must be linked by the application shell")
 }

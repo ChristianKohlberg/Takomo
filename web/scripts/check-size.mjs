@@ -97,6 +97,10 @@ const present = walk('.').sort()
 const unexpected = present.filter((f) => f !== 'index.html' && !/^assets\/[^/]+$/.test(f))
 
 let failed = false
+const unversioned = present.filter(f => /\.(?:js|css)$/.test(f) && !/-[\w-]{8}\.(?:js|css)$/.test(f))
+if (unversioned.length || !FIRST_LOAD.some(f => /^assets\/vendor-[^/]+\.js$/.test(f))) {
+  throw new Error(`Unversioned or missing build assets: ${unversioned.join(', ')}`)
+}
 
 const firstLoad = FIRST_LOAD.reduce((sum, f) => sum + gz(f), 0)
 for (const f of FIRST_LOAD) {
@@ -113,7 +117,7 @@ const line = (label, value, budget) => {
 }
 
 line('first load', firstLoad, BUDGET_KB.firstLoad)
-line('└─ of which vendor', gz('assets/vendor.js'), BUDGET_KB.vendor)
+line('└─ of which vendor', FIRST_LOAD.filter(f => /^assets\/vendor-[^/]+\.js$/.test(f)).reduce((sum, f) => sum + gz(f), 0), BUDGET_KB.vendor)
 // What a lazy route costs on top of first load.
 //
 // This line used to be a hardcoded "0.0 kB — client-side routing", printed with
@@ -149,7 +153,7 @@ line('heaviest lazy chunk', heaviest, BUDGET_KB.lazyChunk)
 // that no Takomo source uses and that only ever appeared via the feedback loop.
 // If one is back, so is the loop.
 const CANARIES = ['.table-column-group{', '.oldstyle-nums{', '.zoom-in{']
-const css = readFileSync(resolve(dist, 'assets/app.css'), 'utf8')
+const css = present.filter(f => f.endsWith('.css')).map(f => readFileSync(resolve(dist, f), 'utf8')).join('\n')
 const leaked = CANARIES.filter((c) => css.includes(c))
 if (leaked.length) {
   failed = true

@@ -4,7 +4,7 @@ One source, **two builds**, because two different consumers want different thing
 
 | build | command | output | consumed by |
 |---|---|---|---|
-| **app** | `npm run build` | `dist/index.html` + `dist/assets/{app,vendor,runtime}.js` + `dist/assets/app.css` | the Rust binary, via `include_str!` |
+| **app** | `npm run build` | `dist/index.html` + `dist/assets/{name}-{hash}.js` + hashed CSS | the Rust binary, via `include_str!` |
 | **library** | `npm run build:lib` | `dist-lib/index.js` + `index.css` + `index.d.ts` | `claude.ai/design` (the design-sync skill) |
 
 The app build is what ships. The library build exists because a design system is
@@ -491,14 +491,13 @@ Removing it all cut the stylesheet from 63.7 kB to 53.0 kB (11.8 → 10.4 kB gz)
 `npm run size` carries three canaries against the regression, because nothing
 else would notice — the build would stay self-consistent, just steadily larger.
 
-**The asset names are load-bearing.** Rust embeds `assets/app.js`,
-`assets/vendor.js`, `assets/runtime.js` and `assets/app.css` BY NAME, so content
-hashing is off. Two consequences: cache correctness comes from an ETag rather
-than the filename, and a fifth chunk would be referenced by `index.html` and
-then 404 because nothing embeds it. `vite.config.ts` fails the build if the
-output is not exactly that set — it caught the bundler's own runtime chunk the
-first time it ran, which is why `runtime.js` is in the list at all (renamed from
-the bundler's internal name so neither Rust nor the CSP encodes "rolldown").
+**Asset URLs isolate releases.** JavaScript chunks and CSS carry content hashes,
+including entry and dependency chunks. ETag revalidation alone cannot replace a
+module already loaded in an open tab: reusing URLs let a new lazy chunk resolve
+minified exports against an older vendor module, causing invalid hook calls.
+`build.rs` embeds the generated flat asset manifest by exact name. A removed
+chunk returns 404 and the route error screen offers Reload page or Go to board.
+`npm run size` rejects unversioned JavaScript/CSS and reads entry URLs from HTML.
 
 **What the trade actually cost and bought.** Measured:
 
