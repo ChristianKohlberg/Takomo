@@ -32,12 +32,10 @@ fn rule(table: &str) -> Option<(&'static str, &'static str)> {
         "mindmap_nodes" | "document_agent_settings" => ("(SELECT project FROM mindmaps WHERE id=@.mindmap)", "document,trace,tickets,agent"),
         "plan_trace" => ("@.project", "trace,document"),
         "specification_versions" | "specification_checkpoints" => ("(SELECT project FROM mindmaps WHERE id=@.mindmap)", "history"),
-        "crdt_updates" => ("CASE @.object_kind WHEN 'mindmap' THEN (SELECT project FROM mindmaps WHERE id=@.object_id) WHEN 'document' THEN (SELECT project FROM documents WHERE id=@.object_id) WHEN 'check' THEN (SELECT project FROM checks WHERE id=@.object_id) ELSE NULL END", "document,trace,tickets,checks"),
-        "checks" | "checklist_policies" | "test_specification_revisions" | "test_runs" | "environments" | "releases" => ("@.project", "checks,document"),
-        "cases" | "check_globs" | "check_environments" | "test_definition_revisions" => ("(SELECT project FROM checks WHERE id=@.check_id)", "checks,document"),
-        "case_verdicts" | "case_environments" => ("(SELECT c.project FROM checks c JOIN cases x ON x.check_id=c.id WHERE x.id=@.case_id)", "checks,document"),
-        "test_run_cases" | "test_run_results" => ("(SELECT project FROM test_runs WHERE id=@.run_id)", "checks,document"),
-        "release_paths" | "release_orphan_globs" => ("(SELECT project FROM releases WHERE id=@.release)", "checks"),
+        "crdt_updates" => ("CASE @.object_kind WHEN 'mindmap' THEN (SELECT project FROM mindmaps WHERE id=@.object_id) WHEN 'document' THEN (SELECT project FROM documents WHERE id=@.object_id) ELSE NULL END", "document,trace,tickets"),
+        "behaviors" | "verification_runs" | "verification_results" => ("@.project", "behaviors"),
+        "behavior_tests" => ("(SELECT project FROM behaviors WHERE id=@.behavior)", "behaviors"),
+        "environments" => ("@.project", ""),
         "codebase_import_jobs" => ("@.project", "agent"),
         "agent_run_usage" => ("COALESCE((SELECT project FROM codebase_import_jobs WHERE id=@.job),(SELECT c.project FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE j.id=@.job))", "agent"),
         "agent_conversations" | "lane_organizer_conversations" => ("@.project", "agent,tickets"),
@@ -69,16 +67,7 @@ fn cascade_owner(table: &str) -> bool {
             | "document_agent_settings"
             | "specification_versions"
             | "specification_checkpoints"
-            | "cases"
-            | "check_globs"
-            | "check_environments"
-            | "test_definition_revisions"
-            | "case_verdicts"
-            | "case_environments"
-            | "test_run_cases"
-            | "test_run_results"
-            | "release_paths"
-            | "release_orphan_globs"
+            | "behavior_tests"
             | "agent_run_usage"
             | "codebase_import_jobs"
             | "agent_jobs"
@@ -317,9 +306,8 @@ mod tests {
         store.with_tx(|tx| { tx.execute_batch("
             INSERT INTO mindmaps(id,project,title,created_by,created_at,updated_at) VALUES('m','aa','Map','test',1,1);
             INSERT INTO document_agent_settings(mindmap,pinned_section_ids) VALUES('m','[]');
-            INSERT INTO checks(id,project,title,created_by,created_at,updated_at) VALUES('ck','aa','Check','test',1,1);
-            INSERT INTO cases(id,check_id,key,created_at,updated_at) VALUES('ca','ck','default',1,1);
-            INSERT INTO case_verdicts(id,case_id,actor_kind,actor,verdict,at) VALUES('cv','ca','agent','test','pass',1);
+            INSERT INTO behaviors(id,project,title,created_by,created_at,updated_at) VALUES('bh','aa','Behavior','test',1,1);
+            INSERT INTO behavior_tests(behavior,test_key) VALUES('bh','t');
             INSERT INTO tickets(id,project,title,state,created_by,created_at,updated_at) VALUES('aa-1','aa','Ticket','open','test',1,1);
             INSERT INTO agent_conversations(id,ticket,node,project,created_at) VALUES('co','aa-1','ticket','aa',1);
             INSERT INTO agent_jobs(id,conversation_id,requested_by,request_id,prompt,snapshot,source_revision,status,created_at) VALUES('j','co','test','req','x','{}','rev','queued',1);
@@ -328,7 +316,7 @@ mod tests {
         let mut rx = store.live_changes.subscribe();
         for (table, id, topic) in [
             ("mindmaps", "m", "document"),
-            ("checks", "ck", "checks"),
+            ("behaviors", "bh", "behaviors"),
             ("tickets", "aa-1", "agent"),
         ] {
             store

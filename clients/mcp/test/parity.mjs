@@ -94,7 +94,27 @@ for (const kind of ["hosted", "stdio"]) {
     await tool(client, "takomo_start", { id: spec.id, to: "ready" }, true);
     assert.equal((await api(`/tickets/${spec.id}/claim`)).holder, null);
     assert.equal((await show(spec.id)).state, "spec");
-    console.log(`${kind}: lifecycle, rollback, ownership, scope, and lease parity passed`);
+    // Verification: the same tools, the same payloads, the same replay rule.
+    for (const name of ["takomo_verification", "takomo_behaviors", "takomo_behavior",
+      "takomo_behavior_create", "takomo_behavior_update", "takomo_run_report", "takomo_runs"]) {
+      assert(listed.tools.some(t => t.name === name), `${kind} lists ${name}`);
+    }
+    const behavior = await tool(client, "takomo_behavior_create", {
+      project, title: `${kind} behavior`, tests: [`${kind}:t`],
+    });
+    assert.equal(behavior.status, "untested");
+    const report = { project, commit: "p1", results: [{ test: `${kind}:t`, outcome: "fail", detail: "x" }],
+      idempotency_key: `${kind}-parity` };
+    const first = await tool(client, "takomo_run_report", report);
+    const again = await tool(client, "takomo_run_report", report);
+    assert.equal(first.replayed, false);
+    assert.equal(again.replayed, true);
+    assert.equal(again.run.id, first.run.id, "a retried report records once");
+    const shown = await tool(client, "takomo_behavior", { id: behavior.id });
+    assert.equal(shown.status, "failing");
+    assert.equal(shown.test_results[0].latest.detail, "x");
+    await tool(client, "takomo_behavior_update", { id: behavior.id, section: "mn-nosuchnode" }, true);
+    console.log(`${kind}: lifecycle, rollback, ownership, scope, lease and verification parity passed`);
   } finally {
     await Promise.all([client.close(), rival.close()]);
   }

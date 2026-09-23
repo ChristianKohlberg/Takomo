@@ -11,7 +11,7 @@ export function Variants() {
       <Button variant="outline">Cancel</Button>
       <Button variant="destructive">Withdraw question</Button>
       <Button variant="ghost">Dismiss</Button>
-      <Button variant="link">docs/checklist.md</Button>
+      <Button variant="link">docs/verification.md</Button>
     </div>
   )
 }

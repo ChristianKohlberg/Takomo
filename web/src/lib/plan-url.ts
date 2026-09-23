@@ -30,7 +30,7 @@ export function mapLink(map: string, node?: string | null): string {
  * Where either view sends somebody who wants this section's tests.
  *
  * The same `n=` hash the other two links use, so `readPlanFocus` reads all
- * three — a check names a node id, and `/verification` resolves it against the
+ * three — a behavior names a node id, and `/verification` resolves it against the
  * project's plan rather than being handed a map as well.
  */
 export function testsLink(node?: string | null): string {

@@ -130,29 +130,14 @@ pub fn workflow_entry_id() -> String {
     format!("wf-{}", random_chars(BASE36, 8))
 }
 
-/// Release id, e.g. "rel-9f3ka2xz".
-pub fn release_id() -> String {
-    format!("rel-{}", random_chars(BASE36, 8))
+/// Behavior id, e.g. "bhv-9f3ka2xz".
+pub fn behavior_id() -> String {
+    format!("bhv-{}", random_chars(BASE36, 8))
 }
 
-/// Checklist check id, e.g. "check-9f3ka2xz".
-pub fn check_id() -> String {
-    format!("check-{}", random_chars(BASE36, 8))
-}
-
-/// Checklist case id, e.g. "case-9f3ka2xz".
-pub fn case_id() -> String {
-    format!("case-{}", random_chars(BASE36, 8))
-}
-
-/// Recorded-verdict id, e.g. "cv-9f3ka2xz".
-pub fn verdict_id() -> String {
-    format!("cv-{}", random_chars(BASE36, 8))
-}
-
-/// Checklist policy id, e.g. "clp-9f3ka2xz".
-pub fn checklist_policy_id() -> String {
-    format!("clp-{}", random_chars(BASE36, 8))
+/// Verification run id, e.g. "vrn-9f3ka2xz".
+pub fn verification_run_id() -> String {
+    format!("vrn-{}", random_chars(BASE36, 8))
 }
 
 /// Token id (public handle for list/revoke), e.g. "tok_a8f2k1x9".

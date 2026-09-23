@@ -24,10 +24,6 @@
 //! - **Questions and promotions** carry a denormalized `project` column, which
 //!   is updated with the ticket. Their history is not rewritten — the event log
 //!   keeps recording the project each event happened in.
-//! - **Checklist checks** are filed under a project and may point at an epic in
-//!   it. An epic that leaves takes no checks with it (they cover the old
-//!   project's surface), so those checks are detached — `epic` cleared — and any
-//!   epic-level checklist policy override is dropped. Both are reported.
 //!
 //! Dependency edges are deliberately left alone: `deps` never required both ends
 //! to share a project, so a cross-project blocker is a legal edge before the move
@@ -89,10 +85,6 @@ pub struct MoveOutcome {
     /// Tickets left behind whose parent moved away, so their `parent` was
     /// cleared. Only ever non-empty with `descendants: false`.
     pub orphaned: Vec<String>,
-    /// Checklist checks whose epic left the project, so their `epic` was cleared.
-    pub checks_detached: Vec<String>,
-    /// Epic-level checklist policy overrides dropped with the departing epic.
-    pub policies_dropped: Vec<String>,
 }
 
 impl MoveOutcome {
@@ -115,20 +107,12 @@ impl MoveOutcome {
                 self.orphaned.len()
             ));
         }
-        if !self.checks_detached.is_empty() {
-            note.push(format!(
-                "{} checklist check(s) lost their epic, which left the project; the checks themselves did not move.",
-                self.checks_detached.len()
-            ));
-        }
         let mut out = json!({
             "to_project": self.to_project,
             "moved": self.moved.iter().map(|m| m.to_json(&self.to_project)).collect::<Vec<_>>(),
             "total": self.moved.len(),
             "unchanged": self.unchanged,
             "orphaned": self.orphaned,
-            "checks_detached": self.checks_detached,
-            "policies_dropped": self.policies_dropped,
         });
         if !note.is_empty() {
             out["note"] = Value::String(note.join(" "));
@@ -208,7 +192,7 @@ impl Store {
     /// Move tickets into another project, optionally with their subtrees.
     ///
     /// One transaction: either every ticket lands in the target project with its
-    /// parent links, tags, questions, promotions and checks reconciled, or nothing
+    /// parent links, tags, questions and promotions reconciled, or nothing
     /// moves. See the module docs for what each of those means.
     pub fn move_tickets(&self, req: &MoveRequest, actor: &str) -> ApiResult<MoveOutcome> {
         if req.tickets.is_empty() {
@@ -324,8 +308,6 @@ impl Store {
                 moved: Vec::new(),
                 unchanged: Vec::new(),
                 orphaned: Vec::new(),
-                checks_detached: Vec::new(),
-                policies_dropped: Vec::new(),
             };
 
             for id in &order {
@@ -400,28 +382,6 @@ impl Store {
                     "UPDATE shares SET project = ?2 WHERE kind = 'subtree' AND \"ref\" = ?1",
                     params![id, req.to_project],
                 )?;
-
-                // Checks stay with the project whose surface they cover; only
-                // their pointer at a departed epic goes.
-                let mut stmt = tx.prepare("SELECT id FROM checks WHERE epic = ?1")?;
-                let checks = stmt
-                    .query_map(params![id], |r| r.get::<_, String>(0))?
-                    .collect::<Result<Vec<_>, _>>()?;
-                drop(stmt);
-                if !checks.is_empty() {
-                    tx.execute(
-                        "UPDATE checks SET epic = NULL, updated_at = ?2 WHERE epic = ?1",
-                        params![id, now],
-                    )?;
-                    out.checks_detached.extend(checks);
-                }
-                let dropped = tx.execute(
-                    "DELETE FROM checklist_policies WHERE epic = ?1",
-                    params![id],
-                )?;
-                if dropped > 0 {
-                    out.policies_dropped.push(id.clone());
-                }
 
                 emit_event(
                     tx,

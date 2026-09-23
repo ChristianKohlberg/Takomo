@@ -13,9 +13,8 @@ use crate::error::ApiResult;
 use crate::ids::now_ms;
 use crate::schedule::Cadence;
 use crate::store::{
-    AskRequest, CaseInput, CheckCreate, EnvironmentCreate, QuestionFilter, ReleasePush,
+    AskRequest, BehaviorCreate, EnvironmentCreate, QuestionFilter, ResultInput, RunReport,
     ScheduleCreate, ScheduleTemplate, Store, TicketCreate, TicketListFilter, TimeoutAction,
-    VerdictInput,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -506,9 +505,9 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
         advance(store, ticket, "done", SEEDER, None)?;
     }
 
-    let ini = initiative(store)?;
+    initiative(store)?;
     environments(store)?;
-    checks(store, &ini)?;
+    behaviors(store)?;
     mindmap(store)?;
 
     // Counted, not hardcoded, so the summary can't drift from the content.
@@ -553,7 +552,7 @@ fn environments(store: &Store) -> ApiResult<()> {
             data_state: Some("production_like".to_string()),
             credentials_hint: Some("env:STAGING_TOKEN".to_string()),
             notes: Some(
-                "Reseeded 03:00 UTC — a verdict recorded just before that is worth re-running."
+                "Reseeded 03:00 UTC — a result reported just before that is worth re-running."
                     .to_string(),
             ),
             ..Default::default()
@@ -794,171 +793,84 @@ fn initiative(store: &Store) -> ApiResult<String> {
     Ok(ini.id)
 }
 
-/// Two checks under the demo initiative, with their cases in DIFFERENT states.
-///
-/// A fixture where everything is verified shows nothing. The whole point of the
-/// surface is the spread: what has never been run, what was verified and then
-/// invalidated by a merge, what failed, and what a person has approved. So this
-/// files two checks, records a mix of verdicts, and then pushes a release
-/// touching one check's globs — which stales exactly the cases that were
-/// verified and leaves the never-run one reading `never`.
-///
-/// It doubles as a traversability check on Checklist itself, the way the ticket
-/// seed is one on the workflow: if filing, verdicts and release staling stop
+/// Behaviors in DIFFERENT states, because a fixture where everything is
+/// verified shows nothing: one failing, one verified, one nobody has tested
+/// yet, and a reported test no behavior links. It doubles as a traversability
+/// check on verification itself — if creating, linking and reporting stop
 /// composing, seeding notices before a person does.
-/// An agent verdict on one case, with no environment — the seeded checks
-/// declare none, so their verdicts are the unscoped reading.
-fn verdict_by<'a>(
-    actor: &'a str,
-    case: &'a str,
-    verdict: &'a str,
-    note: Option<&'a str>,
-) -> VerdictInput<'a> {
-    VerdictInput {
-        case,
-        actor_kind: "agent",
-        actor,
-        // The seeder is a script, not a person.
-        user: None,
-        verdict,
-        note,
-        release: None,
-        environment: None,
+fn behaviors(store: &Store) -> ApiResult<()> {
+    let agent = "agent:verifier";
+    for (title, statement, tests) in [
+        (
+            "Splitting an invoice across two entities keeps the total",
+            "Given an invoice of 100.00, when it is split 60/40 across two entities, both \
+             parts are created and they add up to 100.00 exactly.",
+            vec![
+                "cargo:invoices::split_two_entities",
+                "playwright:invoices.spec.ts › split",
+            ],
+        ),
+        (
+            "A failed save keeps the user's edits and allows retry",
+            "Enter changes, make saving fail, confirm the changes remain on screen, then \
+             retry and confirm they are saved.",
+            vec!["agent:failed-save-retry"],
+        ),
+        (
+            "Rounding never loses a cent on a three-way split",
+            "Splitting 100.00 three ways yields 33.34 + 33.33 + 33.33.",
+            vec![],
+        ),
+    ] {
+        store.create_behavior(
+            &BehaviorCreate {
+                project: PROJECT.to_string(),
+                title: title.to_string(),
+                statement: statement.to_string(),
+                section: None,
+                tests: tests.into_iter().map(str::to_string).collect(),
+            },
+            SEEDER,
+        )?;
     }
-}
-
-fn checks(store: &Store, initiative: &str) -> ApiResult<()> {
-    let split = store.create_check(
-        &CheckCreate {
-            project: PROJECT.to_string(),
-            initiative: Some(initiative.to_string()),
-            title: "Split an invoice across two entities".to_string(),
-            body: "Open a shared invoice, split it, confirm each entity's share reaches AP."
-                .to_string(),
-            precondition: "A finalised invoice with at least two billable entities on it."
-                .to_string(),
-            layer: Some("ui".to_string()),
-            severity: Some("blocking".to_string()),
-            globs: vec!["src/billing/split/**".to_string()],
-            // Declared in two places on purpose: this is the check that shows
-            // what per-environment verification is for — the same flow verified
-            // on staging and never run on production is the finding.
-            environments: vec!["staging".to_string(), "production".to_string()],
-            cost_agent_minutes: Some(6),
-            cost_human_minutes: Some(20),
-            ..Default::default()
-        },
-        SEEDER,
-    )?;
-
-    // A second check the same initiative agreed, at the API layer. The pair is
-    // what makes "a check covers ONE layer" legible rather than abstract.
-    let rounding = store.create_check(
-        &CheckCreate {
-            project: PROJECT.to_string(),
-            initiative: Some(initiative.to_string()),
-            title: "Rounding remainder lands on the majority entity".to_string(),
-            body: "POST a split whose shares do not divide evenly; assert where the cent goes."
-                .to_string(),
-            precondition: "A finalised invoice with an odd total.".to_string(),
-            layer: Some("api".to_string()),
-            severity: Some("advisory".to_string()),
-            globs: vec!["src/billing/rounding/**".to_string()],
-            cost_agent_minutes: Some(2),
-            ..Default::default()
-        },
-        SEEDER,
-    )?;
-
-    let case = |key: &str, label: &str, entities: &str| CaseInput {
-        key: key.to_string(),
-        label: label.to_string(),
-        assignment: json!({ "entities": entities }),
-        seeded: true,
+    let result = |test: &str, outcome: &str, detail: Option<&str>| ResultInput {
+        test: test.to_string(),
+        outcome: outcome.to_string(),
+        detail: detail.map(str::to_string),
     };
-    store.file_cases(
-        &split.id,
-        &[
-            case("entities=2", "two entities", "2"),
-            case("entities=3", "three entities", "3"),
-            case("entities=12", "twelve entities", "12"),
-        ],
-        true,
-        SEEDER,
-    )?;
-    store.file_cases(
-        &rounding.id,
-        &[
-            case("odd-total", "total does not divide evenly", "2"),
-            case("even-total", "total divides evenly", "2"),
-        ],
-        true,
-        SEEDER,
-    )?;
-
-    // `entities=12` stays never-run on purpose: a case nobody has executed is
-    // the gap this feature exists to show, and it must not read the same as one
-    // that went stale.
-    let agent = "agent:runner-1";
-    let split_cases = store.list_cases(&split.id, false, None, None)?.0;
-    for c in split_cases.iter().filter(|c| c.key != "entities=12") {
-        // Staging only. Production is deliberately left untouched, so the demo
-        // shows the case the whole feature exists for: verified in one place and
-        // never run in the other, which reads as NOT verified.
-        store.record_verdict(&VerdictInput {
-            environment: Some("staging"),
-            ..verdict_by(agent, &c.id, "pass", None)
-        })?;
-    }
-    // One also carries a person's approval, so `approved` shows up as a state
-    // distinct from agent-verified.
-    if let Some(walked) = split_cases.iter().find(|c| c.key == "entities=2") {
-        store.record_verdict(&VerdictInput {
-            actor_kind: "human",
-            actor: SEEDER,
-            environment: Some("staging"),
-            ..verdict_by(
-                SEEDER,
-                &walked.id,
-                "pass",
-                Some("Walked it with Ada on the shared account."),
-            )
-        })?;
-    }
-
-    let rounding_cases = store.list_cases(&rounding.id, false, None, None)?.0;
-    for c in &rounding_cases {
-        let (verdict, note) = if c.key == "odd-total" {
-            ("fail", Some("Remainder went to the smaller entity."))
-        } else {
-            ("pass", None)
-        };
-        store.record_verdict(&verdict_by(agent, &c.id, verdict, note))?;
-    }
-
-    // A release touching the split check's claimed paths stales the cases that
-    // were verified and leaves the never-run one alone — the "never ≠ stale"
-    // rule, visible in the fixture rather than only in a test.
-    store.push_release(
-        &ReleasePush {
+    store.report_run(
+        &RunReport {
             project: PROJECT.to_string(),
-            reference: "v1.4.0".to_string(),
-            note: Some("Split rewrite".to_string()),
-            touched_paths: vec!["src/billing/split/apportion.rs".to_string()],
-            orphan_globs: vec![],
+            commit: Some("4f2c9e1".to_string()),
+            note: Some("CI on main.".to_string()),
+            results: vec![
+                result("cargo:invoices::split_two_entities", "pass", None),
+                result(
+                    "playwright:invoices.spec.ts › split",
+                    "fail",
+                    Some("Expected 40.00 on the second entity, got 39.99."),
+                ),
+                result("cargo:invoices::legacy_export", "pass", None),
+            ],
+            idempotency_key: None,
+            user: None,
+        },
+        "ci:main",
+    )?;
+    store.report_run(
+        &RunReport {
+            project: PROJECT.to_string(),
+            commit: Some("4f2c9e1".to_string()),
+            note: Some("Checked by hand on local after the editor change.".to_string()),
+            results: vec![result("agent:failed-save-retry", "pass", None)],
+            idempotency_key: None,
+            user: None,
         },
         agent,
     )?;
-
     Ok(())
 }
 
-/// Every ticket in the demo project.
-/// One brainstorm, mid-flight — the only state a mindmap is interesting in.
-///
-/// Two branches have graduated and two have not, because the graduated ones are
-/// what make the page read as more than a note-taker: a map is a picture of what
-/// the thinking turned into, and that only shows once something has.
 fn mindmap(store: &Store) -> ApiResult<()> {
     // The seeded plan is written BY somebody. Without it `created_by_user` is
     // null everywhere and the history reads as a machine talking to itself,

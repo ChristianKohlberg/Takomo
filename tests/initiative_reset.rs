@@ -56,21 +56,6 @@ async fn initiative_reset_clears_only_selected_document_and_preserves_work() {
         )
         .await
         .1;
-    let (status, check) = app
-        .post(
-            &app.admin,
-            "/v1/projects/tp/checks",
-            json!({"title": "Keep check", "initiative": id}),
-        )
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{check}");
-    let check = app
-        .get(
-            &app.admin,
-            &format!("/v1/checks/{}", check["id"].as_str().unwrap()),
-        )
-        .await
-        .1;
     let (status, after) = app
         .post(
             &app.admin,
@@ -92,15 +77,6 @@ async fn initiative_reset_clears_only_selected_document_and_preserves_work() {
     ] {
         assert_eq!(after[key], before[key], "{key}");
     }
-    assert_eq!(
-        app.get(
-            &app.admin,
-            &format!("/v1/checks/{}", check["id"].as_str().unwrap())
-        )
-        .await
-        .1,
-        check
-    );
     assert_eq!(after["summary"], "");
     assert_eq!(
         after["version"].as_i64(),

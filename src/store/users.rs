@@ -57,8 +57,7 @@ pub struct UserCreate {
 pub struct UserPatch {
     pub name: Option<String>,
     /// `Some(None)` clears the address; `None` leaves it alone. Absent and null
-    /// mean different things on the wire here for the same reason they do on a
-    /// checklist policy override.
+    /// mean different things on the wire: "clear it" has to be expressible.
     pub email: Option<Option<String>>,
     pub meta_merge: Option<Value>,
 }

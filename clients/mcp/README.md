@@ -12,7 +12,7 @@ not change or embed the server in any way.
 
 - Speaks MCP over **stdio** using the official TypeScript SDK.
 - Covers **both loops**: the work loop (claim, transition, comment, done) and the
-  verification loop (checks, cases, verdicts, environments, worklist, gate).
+  verification loop (behaviors, linked tests, reported runs, environments).
 - Wraps each tracker verb as one MCP tool returning compact JSON.
 - `start` and `block` use the server's atomic REST operations, backed by the
   same Store transactions as hosted MCP. A refused transition leaves no new
@@ -55,33 +55,27 @@ not change or embed the server in any way.
 | `takomo_workflow` | Show a project's workflow (states/categories/transitions). |
 | `takomo_whoami` | Identify the token holder if `/whoami` exists; graceful note if not. |
 
-### Verification — how a "done" claim becomes a *verified* one
+### Verification — does the software still do what it should?
 
-**Takomo stores; you compute.** Nothing below generates a case model, validates one,
-or judges whether a coverage claim is true. The store persists what you file and
-enforces who may assert what.
+A **behavior** is what the software must do, in words a person can check. Tests
+are external: Takomo stores only the key a runner reports for each, and a **run**
+is one report of pass/fail per key against a commit. A behavior is `failing` if
+any linked test's latest result failed, `verified` if one passed within
+`fresh_days` (14), `stale` if its passes are older, and `untested` otherwise. See
+[docs/verification.md](../../docs/verification.md).
 
 | Tool | Purpose |
 | --- | --- |
-| `takomo_worklist` | What needs re-verifying, split by **who can clear it** — an agent list and a human list. Each item carries its reason and, where the check declares environments, which one and its base URL. |
-| `takomo_environments` | Where a check can be run: base URL, how to bring it up and give it back, what data is in it, whether writing is safe. Read this *before* running. |
-| `takomo_verdict` | Record what you observed (`pass`/`fail`/`blocked`/`unreachable`). `fail` needs a note. Always an **agent** verdict — a person's approval needs a `human` token through REST. |
-| `takomo_environment_file` | Register the instance you just stood up, so the next runner is not told the URL out of band. Upserts by slug, so it is safe to call every run. |
-| `takomo_checks` / `takomo_check` | List checks (filter by `initiative`, `epic`, `severity`, `layer`), or show one with its cases. `initiative: "none"` finds what nothing agreed. |
-| `takomo_check_file` | Declare a check: one action, one entry precondition, one layer. `environments` makes each case tracked per environment. |
-| `takomo_cases_file` | File the generated case set. Upsert by `key` derived from the assignment, so regenerating keeps history. |
-| `takomo_coverage` / `takomo_gate` | The rollup, and whether verification is good enough to ship. Only `blocking` severity blocks. |
-| `takomo_verification` | Do the tests one **initiative** agreed on still pass? |
-| `takomo_releases` / `takomo_release_push` | List releases, or record the one you merged and learn what it invalidated. |
+| `takomo_verification` | Status counts overall and per plan section, plus reported tests no behavior links. Start here. |
+| `takomo_behaviors` / `takomo_behavior` | List behaviors (filter by `section`, `status`, `q`), or show one with each linked test's latest result and recent history. |
+| `takomo_behavior_create` | Describe a behavior, optionally tied to a plan section and the test keys that verify it. Restate the specification; do not invent requirements. |
+| `takomo_behavior_update` | Edit it, move it to a section, or replace its linked test keys. |
+| `takomo_run_report` | Report one run: commit, a note on why these tests, and pass/fail per key. Retry-safe via an idempotency key. |
+| `takomo_runs` | Reported runs, newest first, with pass/fail counts. |
+| `takomo_environments` / `takomo_environment_file` | Where the software runs, and registering an instance you just stood up. `credentials_hint` is a **pointer**, never a credential. |
 
-Two refusals worth knowing before you hit them:
-
-- A check that must pass in **more than one environment** rejects a verdict that
-  does not say which one it is about (`conflict.environment_ambiguous`). Filing a
-  staging run as production is worse than no record. A check declaring exactly one
-  resolves an omitted environment to that one.
-- `credentials_hint` is a **pointer** to where a credential lives, never the
-  credential — every token with `read` can see it.
+To verify a behavior by hand when no automated test exists, link a key such as
+`agent:failed-save-retry` and report results against it like any other test.
 
 The bug tools (`takomo_bugs`, `takomo_bug`, `takomo_bug_update`, `takomo_bug_research`,
 `takomo_bug_runs`, `takomo_bug_run`, `takomo_bug_steer`, `takomo_bug_cancel`,

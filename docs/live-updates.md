@@ -3,7 +3,7 @@
 The existing project WebSocket sends `{"type":"refresh"}` on connection and after
 lost broadcast history. This requests a complete resync, including for older
 clients. Normal committed changes add a `topics` array: `document`, `trace`,
-`checks`, `projects`, `inbox`, `tickets`, `agent`, `history`, or `search`.
+`behaviors`, `projects`, `inbox`, `tickets`, `agent`, `history`, or `search`.
 Clients without topic support can continue refreshing on every message.
 
 Notifications are collected centrally by connection-local SQLite triggers on the

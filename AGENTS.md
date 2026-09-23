@@ -31,11 +31,19 @@ with a React/TypeScript frontend embedded in the server binary.
 - Document agent edits are proposals against block IDs; humans accept or reject
   them. Preserve concurrent CRDT edits and batch persistence rather than writing
   SQLite on every keystroke. See `docs/documents.md`.
+- Verification is behaviors linked to external test keys plus reported runs.
+  Behavior status is computed from the latest results on read, never stored.
+  Behaviors restate the specification; agents must not invent requirements.
+  See `docs/verification.md`.
+- Agent-facing surfaces move together: a verification or work-loop change
+  updates REST, hosted MCP (`src/mcp.rs`), the stdio client (`clients/mcp/`),
+  the CLI (`clients/cli/takomo`), and the matching skill in `clients/claude-skill/`.
 
 ## Run and validate
 
 Build frontend assets before Rust (`npm ci && npm run build` in `web/`); `web/dist/`
-is generated and untracked. `scripts/build.sh` builds both for delivery.
+is generated and untracked. `scripts/build.sh` builds both for delivery. A reused
+worktree can carry stale `node_modules`; run `npm ci` before trusting a web failure.
 
 Use Backlot for a seeded app instead of manually building, seeding, and serving:
 
@@ -101,7 +109,7 @@ cannot change the assets embedded in an existing binary.
 - `spec/auth.md`, `spec/workflow-format.md`: authorization and workflow contracts.
 - `docs/documents.md`, `docs/initiatives.md`, `docs/mindmaps.md`: collaborative content.
 - `docs/ask-a-human.md`, `docs/users.md`, `docs/epic-claims.md`: people and work ownership.
-- `docs/checklist.md`, `docs/environments.md`: verification and environments.
+- `docs/verification.md`, `docs/environments.md`: verification and environments.
 - `docs/hosting.md`, `docs/hosted-mcp-clients.md`: deployment and hosted clients.
 
 `AGENTS.md` owns verification policy; consult `CLAUDE.md` for additional conventions.

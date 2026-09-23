@@ -1,149 +1,355 @@
+// The Tests view of the specification workspace: behaviors, the tests linked to
+// them, and what the latest reported runs say. Rendered full-width as the Tests
+// view and `compact` in the section side panel of Document and Map.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { affectsProjectTopic, useProjectUpdates } from '@/hooks/useProjectUpdates'
 import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
-import { useSpecification } from '../specification/context'
 import { Button } from '@/components/ui/button'
-import { CheckDialog } from '@/components/verification/CheckDialog'
-import { CodeReferences } from '@/components/verification/CodeReferences'
-import { CaseDetails } from '@/components/verification/CaseDetails'
-import { api, type ApiErrorShape } from '@/lib/api'
+import type { ApiErrorShape } from '@/lib/api'
+import {
+  BEHAVIOR_STATUSES,
+  createBehavior,
+  listBehaviors,
+  patchBehavior,
+  resultStamp,
+  type Behavior,
+  type BehaviorStatus,
+  type StatusCounts,
+} from '@/lib/behaviors'
 import { pick } from '@/lib/i18n'
-import { listInitiatives } from '@/lib/initiatives'
-import { archiveCheck, createCheck, listEnvironments, type Environment } from '@/lib/verification'
-import { listDefinitions, type TestDefinition, type TestRun, type RunPage } from '@/lib/test-runs'
-import { RunComposer } from './RunComposer'
-import { RunDetail } from './RunDetail'
+import { cn } from '@/lib/utils'
+import { useSpecification } from '../specification/context'
+import { BehaviorDetail } from './BehaviorDetail'
+import { BehaviorDialog } from './BehaviorDialog'
+import { SectionSelect } from './SectionSelect'
+import { StatusBadge, statusLabel } from './status'
 import { STR } from './strings'
 
-const states: Record<string, [string, string]> = {
-  not_executed: ['Not run', 'Nicht ausgeführt'], verified: ['Verified', 'Verifiziert'],
-  failed: ['Failed', 'Fehlgeschlagen'], outdated: ['Needs revalidation', 'Erneut prüfen'],
-  in_progress: ['In progress', 'In Bearbeitung'], needs_approval: ['Needs approval', 'Bestätigung ausstehend'],
-  mixed_versions: ['Different code versions', 'Verschiedene Codeversionen'],
-}
+const EMPTY_COUNTS: StatusCounts = { total: 0, verified: 0, failing: 0, stale: 0, untested: 0 }
+
 export function TestsView({ compact = false }: { compact?: boolean }) {
-  const { token, lang, project, scopes, nodes, checks, editCheck, refreshChecks, onError } = useSpecification()
-  const de = lang === 'de'
+  const { token, lang, project, scopes, nodes, verification, refreshVerification, openBehavior, onError } =
+    useSpecification()
   const t = pick(STR, lang)
-  const [params, setParams] = useSearchParams()
-  const tab = params.get('tests') === 'runs' && !compact ? 'runs' : 'definitions'
-  const selectedRun = params.get('run')
+  const canWrite = scopes.includes('write')
+  const [params] = useSearchParams()
+  const selected = params.get('behavior')
   const [section, setSection] = useWorkspaceSection()
-  const [definitions, setDefinitions] = useState<TestDefinition[]>([])
-  const [runs, setRuns] = useState<RunPage>({ items: [], next_cursor: null, total: 0 })
-  const [run, setRun] = useState<TestRun | null>(null)
-  const [environments, setEnvironments] = useState<Environment[]>([])
-  const [initiatives, setInitiatives] = useState<{ id: string; title: string }[]>([])
-  const [creating, setCreating] = useState(false)
-  const [compose, setCompose] = useState<string | null>(null)
+  const [items, setItems] = useState<Behavior[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<{ permission: boolean; message: string } | null>(null)
   const [search, setSearch] = useState('')
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState<BehaviorStatus | ''>('')
+  const [creating, setCreating] = useState(false)
+  const [version, setVersion] = useState(0)
   const epoch = useRef(0)
-  const loadedScope = useRef({ token, project, selectedRun })
+  const loadedScope = useRef({ token, project })
+
   const refresh = useCallback(async () => {
     const attempt = ++epoch.current
     const previous = loadedScope.current
-    if (previous.token !== token || previous.project !== project || previous.selectedRun !== selectedRun) setLoading(true)
-    loadedScope.current = { token, project, selectedRun }
+    if (previous.token !== token || previous.project !== project) setLoading(true)
+    loadedScope.current = { token, project }
     try {
-      const [defs, page, envs, inis, detail] = await Promise.all([
-        listDefinitions(token, project),
-        api<RunPage>(token, `/projects/${encodeURIComponent(project)}/test-runs`),
-        listEnvironments(token, project), listInitiatives(token, { project }),
-        selectedRun ? api<TestRun>(token, `/test-runs/${encodeURIComponent(selectedRun)}`) : Promise.resolve(null),
-      ])
+      const page = await listBehaviors(token, project)
       if (attempt !== epoch.current) return
-      setDefinitions(defs); setRuns(page); setEnvironments(envs.items.filter(e => !e.archived_at)); setInitiatives(inis.items)
-      setRun(detail?.project === project ? detail : null)
+      setItems(page.items)
+      setTotal(page.total)
       setLoadError(null)
-    } catch (error) { if (attempt === epoch.current) {
+    } catch (error) {
+      if (attempt !== epoch.current) return
       const failure = error as ApiErrorShape
       if (failure.auth) onError(error)
-      setLoadError({ permission: failure.status === 403, message: failure.message || '' }); setRun(null)
-    } }
-    finally { if (attempt === epoch.current) setLoading(false) }
-  }, [token, project, selectedRun, onError])
-  useEffect(() => { const counter = epoch; void refresh(); return () => { counter.current++ } }, [refresh])
-  useProjectUpdates(token, project, async event => { if (affectsProjectTopic(event, 'checks', 'projects')) await refresh() })
-  const navigateTab = (next: string, id?: string) => setParams(current => {
-    const nextParams = new URLSearchParams(current)
-    nextParams.set('tests', next)
-    if (next === 'runs') { nextParams.set('view', 'tests'); nextParams.delete('panel'); nextParams.delete('check') }
-    if (id) nextParams.set('run', id); else nextParams.delete('run')
-    return nextParams
+      setLoadError({ permission: failure.status === 403, message: failure.message || '' })
+    } finally {
+      if (attempt === epoch.current) setLoading(false)
+    }
+  }, [token, project, onError])
+
+  useEffect(() => {
+    const counter = epoch
+    void refresh()
+    return () => {
+      counter.current++
+    }
+  }, [refresh])
+  useProjectUpdates(token, project, async (event) => {
+    if (!affectsProjectTopic(event, 'behaviors', 'projects')) return
+    setVersion((v) => v + 1)
+    await refresh()
   })
-  const changed = (next: TestRun) => { setRun(next); setCompose(null); if (tab !== 'runs' || selectedRun !== next.id) navigateTab('runs', next.id); void refresh(); void refreshChecks() }
-  const scoped = definitions.filter(d => !section || d.definition.node === section)
-  const filtered = scoped.filter(d => (!status || d.execution.state === status) &&
-    (!search.trim() || [d.definition.title, d.definition.precondition, nodes.find(n => n.id === d.definition.node)?.title ?? ''].join(' ').toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())))
-  const selectedChecks = new Set(scoped.map(d => d.id))
-  const visibleRuns = runs.items.filter(r => !section || r.checks.some(c => selectedChecks.has(c)))
-  return <>
-    <div className="flex flex-none flex-wrap items-center gap-2 border-b px-4 py-2">
-      {!compact && <div className="flex gap-1" aria-label={de ? 'Tests' : 'Tests'}>
-        <Button variant={tab === 'definitions' ? 'secondary' : 'ghost'} aria-pressed={tab === 'definitions'} onClick={() => navigateTab('definitions')}>{de ? 'Definitionen' : 'Definitions'}</Button>
-        <Button variant={tab === 'runs' ? 'secondary' : 'ghost'} aria-pressed={tab === 'runs'} onClick={() => navigateTab('runs')}>{de ? 'Testläufe' : 'Runs'}</Button>
-      </div>}
-      <span className="grow" />
-      {tab === 'definitions' && scopes.includes('write') && <Button onClick={() => setCreating(true)}>+ {de ? 'Test definieren' : 'Define test'}</Button>}
-      <Button variant="outline" onClick={() => void refresh()}>{de ? 'Aktualisieren' : 'Refresh'}</Button>
-    </div>
-    <main className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-5">
-      <div className="mx-auto grid w-full max-w-240 gap-4 pb-12">
-        <div><h1 className="text-lg font-semibold">{tab === 'definitions' ? (de ? 'Was muss stimmen?' : 'What must be true?') : (de ? 'Was wurde getestet?' : 'What was tested?')}</h1>
-          <p className="text-sm text-muted-foreground">{tab === 'definitions' ? (de ? 'Gemeinsame Definitionen beschreiben das erwartete Verhalten. Jeder Testlauf hält den geprüften Stand fest.' : 'Shared definitions describe expected behavior. Each run captures the revisions it tests.') : (de ? 'Ausführung, Nachweise und menschliche Prüfung je Versuch.' : 'Execution, evidence, and human review for each attempt.')}</p></div>
-        {section && !compact && <div className="flex flex-wrap items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm"><span className="min-w-0 break-words">{nodes.find(n => n.id === section)?.title ?? section}</span><Button variant="ghost" size="sm" onClick={() => setSection(null)}>{de ? 'Alle Abschnitte' : 'All sections'}</Button></div>}
-        {loading && <p role="status">{de ? 'Laden …' : 'Loading …'}</p>}
-        {loadError && <div role="alert" className="rounded-xl border p-4">
-          <h2 className="font-semibold">{loadError.permission ? (de ? `Kein Zugriff auf Tests in ${project}` : `Cannot access tests in ${project}`) : (de ? 'Daten konnten nicht geladen werden' : 'Could not load data')}</h2>
-          <p className="mt-2 break-words text-sm">{loadError.message}</p>
-          <p className="mt-2 text-sm text-muted-foreground">{loadError.permission ? (de ? 'Wähle ein zugängliches Projekt oder melde dich im Profil mit einem berechtigten Konto an.' : 'Choose a project you can access, or use your profile to sign in with an authorized account.') : (de ? 'Bitte erneut aktualisieren.' : 'Refresh to try again.')}</p>
-        </div>}
-        {!loading && !loadError && (tab === 'definitions' ? <>
-          <div className="flex flex-wrap gap-2" aria-label={de ? 'Testübersicht' : 'Test overview'}>
-            {Object.entries(states).filter(([value]) => ['not_executed', 'verified', 'failed', 'outdated'].includes(value) || scoped.some(d => d.execution.state === value)).map(([value, words]) => <Button key={value} variant={status === value ? 'secondary' : 'outline'} size="sm" aria-pressed={status === value} onClick={() => setStatus(current => current === value ? '' : value)}>{words[de ? 1 : 0]} · {scoped.filter(d => d.execution.state === value).length}</Button>)}
-          </div>
-          <div className="flex min-w-0 flex-col gap-2 md:flex-row">
-            <input type="search" value={search} onChange={e => setSearch(e.target.value)} aria-label={de ? 'Testdefinitionen suchen' : 'Search test definitions'} placeholder={de ? 'Testdefinitionen suchen' : 'Search test definitions'} className="bg-card min-w-0 flex-1 rounded-md border px-3 py-2 text-sm" />
-            <select aria-label={de ? 'Abschnitt filtern' : 'Filter section'} value={section ?? ''} onChange={e => setSection(e.target.value || null)} className="bg-card min-w-0 max-w-full rounded-md border px-3 py-2 text-sm md:max-w-72">
-              <option value="">{de ? 'Alle Abschnitte' : 'All sections'}</option>
-              {nodes.map(node => <option key={node.id} value={node.id}>{node.title}</option>)}
-            </select>
-            {(search || status) && <Button variant="ghost" onClick={() => { setSearch(''); setStatus('') }}>{de ? 'Filter löschen' : 'Clear filters'}</Button>}
-          </div>
-          {!loading && !filtered.length && <div className="rounded-xl border border-dashed px-5 py-8 text-center text-sm text-muted-foreground">{search || status ? (de ? 'Keine Definitionen passen zu diesen Filtern.' : 'No definitions match these filters.') : (de ? 'Noch keine Testdefinitionen für diesen Bereich.' : 'No test definitions for this scope yet.')}</div>}
-          {filtered.map(d => <article key={d.id} className="min-w-0 rounded-xl border bg-card p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><h2 className="break-words font-semibold">{d.definition.title}</h2><p className="mt-1 text-xs text-muted-foreground">{d.definition.layer} · {d.definition.severity} · {d.definition.cases.length} {de ? (d.definition.cases.length === 1 ? 'Fall' : 'Fälle') : (d.definition.cases.length === 1 ? 'case' : 'cases')}</p></div>
-              <span className={`rounded-md px-2 py-1 text-xs ${d.execution.state === 'verified' ? 'bg-ok-bg text-ok' : d.execution.state === 'failed' ? 'bg-nfbg text-nf' : 'bg-muted text-muted-foreground'}`}>{states[d.execution.state]?.[de ? 1 : 0] ?? d.execution.state}</span></div>
-            {d.definition.node && <a className="mt-2 block break-words text-sm text-primary underline underline-offset-2" href={`?${new URLSearchParams({ ...Object.fromEntries(params), view: 'document', section: d.definition.node })}`}>{de ? 'Abschnitt: ' : 'Section: '}{nodes.find(n => n.id === d.definition.node)?.title ?? d.definition.node}</a>}
-            {d.definition.precondition && <p className="mt-3 whitespace-pre-wrap break-words text-sm text-muted-foreground">{d.definition.precondition}</p>}
-            {!d.definition.cases.length && <p className="mt-3 text-sm text-muted-foreground">{de ? 'Noch keine Fälle definiert. Bitte deinen Agenten, Fälle für diese Definition zu erstellen.' : 'No cases defined yet. Ask your agent to generate cases for this definition.'}</p>}
-            <details className="mt-3 text-sm"><summary className="cursor-pointer">{de ? 'Testfälle' : 'Test cases'}</summary><ul className="mt-2 grid gap-2">{d.definition.cases.map(c => <li key={c.id} className="min-w-0 rounded-md bg-muted px-3 py-2"><p className="break-words font-medium">{c.label || c.key}</p><CaseDetails assignment={c.assignment} lang={lang} /></li>)}</ul></details>
-            <CodeReferences metadata={checks.find(check => check.id === d.id)?.metadata} lang={lang} />
-            <div className="mt-4 flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={() => editCheck(d.id)}>{de ? 'Definition öffnen' : 'Open definition'}</Button>
-              {scopes.includes('write') && <Button size="sm" disabled={!d.definition.cases.length} onClick={() => setCompose(d.id)}>{de ? 'Testlauf erstellen' : 'Create run'}</Button>}
-              {d.execution.environments.filter(e => e.run).map(e => <Button key={e.run} variant="ghost" size="sm" onClick={() => navigateTab('runs', e.run)}>{environments.find(env => env.id === e.environment)?.name ?? (de ? 'Letzter Lauf' : 'Latest run')} · {states[e.state]?.[de ? 1 : 0] ?? e.state}</Button>)}
-              {scopes.includes('write') && <Button variant="ghost" size="sm" onClick={() => { if (window.confirm(t.confirmArchiveCheck)) void archiveCheck(token, d.id).then(async () => { await refresh(); await refreshChecks() }).catch(onError) }}>{de ? 'Archivieren' : 'Archive'}</Button>}
-            </div>
-          </article>)}
-        </> : <>
-          {run && <RunDetail key={run.id} run={run} changed={changed} />}
-          <div className="grid gap-2">{visibleRuns.map(r => <button key={r.id} type="button" className={`min-w-0 rounded-lg border p-3 text-left hover:bg-muted ${r.id === selectedRun ? 'border-primary' : ''}`} onClick={() => navigateTab('runs', r.id)}>
-            <div className="flex flex-wrap justify-between gap-2 text-sm"><span>{r.kind === 'legacy' ? (de ? 'Historischer Nachweis' : 'Legacy evidence') : `${r.case_count} ${de ? 'Fälle' : 'cases'}`} · {r.status}</span><time className="text-xs text-muted-foreground">{new Date(r.created_at).toLocaleString()}</time></div>
-            <p className="mt-1 break-all text-xs text-muted-foreground">{r.code_ref ?? '—'} · {r.environment_snapshot?.name ?? r.environment ?? '—'} · {r.id}</p>
-          </button>)}</div>
-          {!loading && !visibleRuns.length && <p className="py-6 text-center text-sm text-muted-foreground">{section ? (de ? 'Keine Testläufe für diesen Abschnitt auf dieser Seite.' : 'No runs for this section on this page.') : (de ? 'Noch keine Testläufe auf dieser Seite. Erstelle einen Lauf aus einer Testdefinition.' : 'No runs on this page yet. Create a run from a test definition.')}<br /><Button className="mt-3" variant="outline" onClick={() => navigateTab('definitions')}>{de ? 'Zu den Definitionen' : 'Go to definitions'}</Button></p>}
-          {runs.next_cursor && <Button variant="outline" onClick={() => {
-            const attempt = epoch.current
-            void api<RunPage>(token, `/projects/${encodeURIComponent(project)}/test-runs?cursor=${encodeURIComponent(runs.next_cursor!)}`).then(page => { if (attempt === epoch.current) setRuns(current => ({ ...page, items: [...current.items, ...page.items] })) }).catch(onError)
-          }}>{de ? 'Ältere Läufe laden' : 'Load older runs'}</Button>}
-        </>)}
+
+  // A local change: the list, the workspace's section counts, and the open detail.
+  const changed = useCallback(async () => {
+    await Promise.all([refresh(), refreshVerification().catch(onError)])
+  }, [refresh, refreshVerification, onError])
+
+  const scoped = items.filter((b) => !section || b.section === section)
+  const needle = search.trim().toLocaleLowerCase()
+  const filtered = scoped.filter(
+    (b) =>
+      (!status || b.status === status) &&
+      (!needle ||
+        [b.title, b.statement, ...b.tests, nodes.find((n) => n.id === b.section)?.title ?? '']
+          .join(' ')
+          .toLocaleLowerCase()
+          .includes(needle)),
+  )
+  const counts: StatusCounts = section
+    ? (verification?.sections[section] ?? EMPTY_COUNTS)
+    : (verification?.summary ?? EMPTY_COUNTS)
+  const sectionTitle = (id: string | null) => (id ? (nodes.find((n) => n.id === id)?.title ?? id) : null)
+
+  const detail = selected ? (
+    <BehaviorDetail
+      key={selected}
+      token={token}
+      id={selected}
+      nodes={nodes}
+      canWrite={canWrite}
+      t={t}
+      version={version}
+      onBack={() => openBehavior(null)}
+      onChanged={() => void changed()}
+      onDeleted={() => {
+        openBehavior(null)
+        void changed()
+      }}
+      onError={onError}
+    />
+  ) : null
+
+  return (
+    <>
+      <div className="flex flex-none flex-wrap items-center gap-2 border-b px-4 py-2">
+        <span className="grow" />
+        {canWrite && <Button onClick={() => setCreating(true)}>+ {t.newBehavior}</Button>}
+        <Button variant="outline" onClick={() => void changed()}>
+          {t.refresh}
+        </Button>
       </div>
-    </main>
-    <CheckDialog open={creating} onOpenChange={setCreating} initiatives={initiatives} environments={environments.map(e => ({ id: e.id, slug: e.slug }))} nodes={nodes.map(n => ({ id: n.id, title: n.title }))} defaultNode={section ?? undefined} labels={t} onSubmit={async fields => { await createCheck(token, project, fields); await refresh(); await refreshChecks() }} />
-    {compose && <RunComposer key={compose} check={compose} environments={environments} close={() => setCompose(null)} created={changed} />}
-  </>
+      <main className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-5">
+        <div
+          className={cn(
+            'mx-auto grid w-full gap-4 pb-12',
+            selected && !compact ? 'max-w-360 md:grid-cols-2 md:items-start' : 'max-w-240',
+          )}
+        >
+          <div className={cn('grid min-w-0 gap-4', selected && (compact ? 'hidden' : 'hidden md:grid'))}>
+            {!compact && (
+              <div>
+                <h1 className="text-lg font-semibold">{t.heading}</h1>
+                <p className="text-muted-foreground text-sm">{t.intro}</p>
+              </div>
+            )}
+            {section && !compact && (
+              <div className="bg-muted flex flex-wrap items-center gap-2 rounded-md px-3 py-2 text-sm">
+                <span className="min-w-0 break-words">{sectionTitle(section)}</span>
+                <Button variant="ghost" size="sm" onClick={() => setSection(null)}>
+                  {t.allSections}
+                </Button>
+              </div>
+            )}
+            {loading && <p role="status">{t.loading}</p>}
+            {loadError && (
+              <div role="alert" className="rounded-xl border p-4">
+                <h2 className="font-semibold">
+                  {loadError.permission ? t.noAccess.replace('{project}', project) : t.loadFailed}
+                </h2>
+                <p className="mt-2 text-sm break-words">{loadError.message}</p>
+                <p className="text-muted-foreground mt-2 text-sm">
+                  {loadError.permission ? t.noAccessHint : t.retryHint}
+                </p>
+              </div>
+            )}
+            {!loading && !loadError && (
+              <>
+                <div className="grid gap-1.5">
+                  <div className="flex flex-wrap gap-2" role="group" aria-label={t.overview}>
+                    {BEHAVIOR_STATUSES.map((value) => (
+                      <Button
+                        key={value}
+                        variant={status === value ? 'secondary' : 'outline'}
+                        size="sm"
+                        aria-pressed={status === value}
+                        onClick={() => setStatus((current) => (current === value ? '' : value))}
+                      >
+                        {statusLabel(value, t)} · {counts[value]}
+                      </Button>
+                    ))}
+                  </div>
+                  {verification && (
+                    <p className="text-muted-foreground m-0 text-xs">
+                      {t.freshness.replace('{days}', String(verification.fresh_days))}
+                    </p>
+                  )}
+                </div>
+                <div className="flex min-w-0 flex-col gap-2 md:flex-row">
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    aria-label={t.search}
+                    placeholder={t.search}
+                    className="bg-card min-w-0 flex-1 rounded-md border px-3 py-2 text-sm"
+                  />
+                  {!compact && (
+                    <SectionSelect
+                      label={t.filterSection}
+                      nodes={nodes}
+                      value={section}
+                      noneLabel={t.allSections}
+                      onChange={setSection}
+                    />
+                  )}
+                  {(search || status) && (
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setSearch('')
+                        setStatus('')
+                      }}
+                    >
+                      {t.clearFilters}
+                    </Button>
+                  )}
+                </div>
+                {total > items.length && (
+                  <p className="text-muted-foreground m-0 text-xs">
+                    {t.truncated.replace('{shown}', String(items.length)).replace('{total}', String(total))}
+                  </p>
+                )}
+                {!filtered.length && (
+                  <div className="text-muted-foreground rounded-xl border border-dashed px-5 py-8 text-center text-sm">
+                    {search || status ? t.emptyFiltered : section ? t.emptySection : t.empty}
+                  </div>
+                )}
+                <ul className="m-0 grid list-none gap-2 p-0">
+                  {filtered.map((b) => (
+                    <li key={b.id}>
+                      <button
+                        type="button"
+                        onClick={() => openBehavior(b.id)}
+                        aria-current={b.id === selected ? 'true' : undefined}
+                        className={cn(
+                          'bg-card hover:bg-muted w-full min-w-0 cursor-pointer rounded-xl border p-3 text-left',
+                          b.id === selected && 'border-primary',
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <h2 className="min-w-0 flex-1 font-semibold break-words">{b.title}</h2>
+                          <StatusBadge status={b.status} t={t} />
+                        </div>
+                        <p className="text-muted-foreground m-0 mt-1 text-xs break-words">
+                          {b.tests.length
+                            ? `${b.tests.length} ${b.tests.length === 1 ? t.test : t.tests}`
+                            : t.noTests}
+                          {b.last_result && ` · ${resultStamp(b.last_result)}`}
+                          {!section && b.section && ` · ${sectionTitle(b.section)}`}
+                        </p>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {!compact && !section && verification && verification.unlinked_tests.total > 0 && (
+                  <UnlinkedTests
+                    t={t}
+                    canWrite={canWrite}
+                    behaviors={items}
+                    tests={verification.unlinked_tests.items}
+                    total={verification.unlinked_tests.total}
+                    onLink={async (behavior, test) => {
+                      try {
+                        await patchBehavior(token, behavior.id, { tests: [...behavior.tests, test] })
+                        await changed()
+                      } catch (error) {
+                        onError(error)
+                      }
+                    }}
+                  />
+                )}
+              </>
+            )}
+          </div>
+          {detail && <div className="min-w-0">{detail}</div>}
+        </div>
+      </main>
+      <BehaviorDialog
+        open={creating}
+        onOpenChange={setCreating}
+        nodes={nodes}
+        defaultSection={section}
+        labels={t}
+        onSubmit={async (fields) => {
+          const created = await createBehavior(token, project, fields)
+          await changed()
+          openBehavior(created.id)
+        }}
+      />
+    </>
+  )
+}
+
+function UnlinkedTests({
+  t,
+  canWrite,
+  behaviors,
+  tests,
+  total,
+  onLink,
+}: {
+  t: (typeof STR)['en']
+  canWrite: boolean
+  behaviors: Behavior[]
+  tests: { test: string; outcome: 'pass' | 'fail'; at: string; commit: string | null }[]
+  total: number
+  onLink: (behavior: Behavior, test: string) => Promise<void>
+}) {
+  return (
+    <section className="grid gap-2 border-t pt-4" aria-label={t.unlinked}>
+      <h2 className="text-sm font-semibold">
+        {t.unlinked} · {total}
+      </h2>
+      <p className="text-muted-foreground m-0 text-xs">{t.unlinkedHint}</p>
+      <ul className="m-0 grid list-none gap-2 p-0">
+        {tests.map((item) => (
+          <li
+            key={item.test}
+            className="flex min-w-0 flex-col gap-2 rounded-md border px-3 py-2 md:flex-row md:items-center"
+          >
+            <div className="min-w-0 flex-1">
+              <code className="text-xs break-all">{item.test}</code>
+              <p className="text-muted-foreground m-0 text-xs">
+                <span className={item.outcome === 'pass' ? 'text-ok' : 'text-nf'}>
+                  {item.outcome === 'pass' ? t.pass : t.fail}
+                </span>
+                {' · '}
+                {resultStamp(item)}
+              </p>
+            </div>
+            {canWrite && behaviors.length > 0 && (
+              <select
+                aria-label={t.linkToLabel.replace('{test}', item.test)}
+                value=""
+                onChange={(event) => {
+                  const target = behaviors.find((b) => b.id === event.target.value)
+                  if (target) void onLink(target, item.test)
+                }}
+                className="bg-card min-w-0 max-w-full rounded-md border px-2 py-1 text-xs md:max-w-60"
+              >
+                <option value="">{t.linkTo}</option>
+                {behaviors.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.title}
+                  </option>
+                ))}
+              </select>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
 }

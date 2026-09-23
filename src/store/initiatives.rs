@@ -102,19 +102,15 @@ fn human_bytes(bytes: i64) -> String {
 
 /// What deleting an initiative removed, and what it left standing.
 ///
-/// Returned rather than a bare 204 because two of these numbers are things the
-/// caller could not have known and may need to act on: how many verification
-/// checks were detached, and how many tickets now carry an `initiative:` tag
-/// naming nothing (they move into the roadmap's `uninitiated` bucket).
+/// Returned rather than a bare 204 because the caller could not have known how
+/// many tickets now carry an `initiative:` tag naming nothing (they move into
+/// the roadmap's `uninitiated` bucket).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeletedInitiative {
     /// Entries removed with it, attachments included.
     pub entries: i64,
     /// Their total stored bytes, text and attachments together.
     pub bytes: i64,
-    /// Checks whose `initiative` column was cleared. Only ever non-zero on a
-    /// forced delete; without `force` a single one refuses the whole call.
-    pub detached_checks: i64,
     /// Tickets whose `initiative:<id>` tag now names nothing. Left exactly as
     /// they were — the roadmap keeps them visible under `uninitiated`.
     pub tagged_tickets: i64,
@@ -659,18 +655,11 @@ impl Store {
     /// duplicate, a mistake, an experiment. Parking those leaves them in the
     /// list, in the tree and on the map forever.
     ///
-    /// Three kinds of reference point at an initiative, and each is handled the
+    /// Two kinds of reference point at an initiative, and each is handled the
     /// way the code that created it already decided it should be:
     ///
     /// - **Entries belong to it**, so they go with it, attachments included.
     ///   Nothing else can reach them once their owner is gone.
-    /// - **A check's `initiative` is validated on write** — a column chosen
-    ///   from a list, where `validate_initiative` calls a wrong id "a mistake
-    ///   worth refusing where it is made". So a delete may not leave one
-    ///   dangling: it refuses, and names them. Forced, it clears the column
-    ///   rather than orphaning it, which is a state the column already has a
-    ///   meaning for (a check filed before the link existed belongs to no
-    ///   initiative — a fact, not a gap).
     /// - **A ticket's `initiative:<id>` tag is deliberately allowed to dangle.**
     ///   The roadmap keeps such a ticket visible in `uninitiated` instead of
     ///   dropping it, so those tickets are neither blocked on nor edited here.
@@ -681,40 +670,12 @@ impl Store {
     /// `promoted_kind`/`promoted_id` untouched, for the reason the schema gives
     /// where it declines a foreign key: deleting the work must leave the record
     /// of where it came from.
-    pub fn delete_initiative(
-        &self,
-        id: &str,
-        force: bool,
-        actor: &str,
-    ) -> ApiResult<DeletedInitiative> {
+    pub fn delete_initiative(&self, id: &str, actor: &str) -> ApiResult<DeletedInitiative> {
         let now = now_ms();
         self.with_tx(|tx| {
             let ini =
                 get_initiative_row(tx, id)?.ok_or_else(|| ApiError::not_found("initiative", id))?;
             ensure_project_writable(tx, &ini.project)?;
-
-            let checks: Vec<String> = {
-                let mut stmt =
-                    tx.prepare("SELECT id FROM checks WHERE initiative = ?1 ORDER BY id")?;
-                let rows = stmt
-                    .query_map(params![id], |r| r.get::<_, String>(0))?
-                    .collect::<Result<Vec<_>, _>>()?;
-                rows
-            };
-            if !checks.is_empty() && !force {
-                let n = checks.len();
-                return Err(ApiError::conflict(
-                    "conflict.initiative_has_checks",
-                    format!(
-                        "Initiative '{id}' is the agreement behind {n} verification \
-                         check(s), and a check may not name an initiative that does not \
-                         exist. Re-file them under another initiative (PATCH \
-                         /v1/checks/<id> with 'initiative'), detach them (set it to null), \
-                         or re-issue this delete with ?force=true to detach them for you."
-                    ),
-                )
-                .details(json!({ "checks": checks })));
-            }
 
             // Counted, not blocked on: see the doc comment. `json_each` is how
             // the roadmap finds the same rows, so the two cannot disagree about
@@ -734,12 +695,6 @@ impl Store {
             )?;
             let entries = ini.rollup.entries;
 
-            if !checks.is_empty() {
-                tx.execute(
-                    "UPDATE checks SET initiative = NULL WHERE initiative = ?1",
-                    params![id],
-                )?;
-            }
             tx.execute(
                 "DELETE FROM initiative_entries WHERE initiative = ?1",
                 params![id],
@@ -757,7 +712,6 @@ impl Store {
                     "title": ini.title,
                     "entries": entries,
                     "bytes": bytes,
-                    "detached_checks": checks.len(),
                     "tagged_tickets": tagged_tickets,
                 }),
                 now,
@@ -766,7 +720,6 @@ impl Store {
             Ok(DeletedInitiative {
                 entries,
                 bytes,
-                detached_checks: checks.len() as i64,
                 tagged_tickets,
             })
         })

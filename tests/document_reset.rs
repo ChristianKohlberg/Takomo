@@ -348,16 +348,18 @@ async fn specification_reset_clears_shared_content_and_preserves_history_and_lin
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{ticket}");
-    let (status, check) = app
+    let (status, behavior) = app
         .post(
             &app.admin,
-            "/v1/projects/tp/checks",
-            json!({"title":"Keep check","node":node_id}),
+            "/v1/projects/tp/behaviors",
+            json!({"title":"Keep behavior","section":node_id}),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "{check}");
-    let check_id = check["id"].as_str().unwrap();
-    let (_, check_before) = app.get(&app.admin, &format!("/v1/checks/{check_id}")).await;
+    assert_eq!(status, StatusCode::CREATED, "{behavior}");
+    let behavior_id = behavior["id"].as_str().unwrap();
+    let (_, behavior_before) = app
+        .get(&app.admin, &format!("/v1/behaviors/{behavior_id}"))
+        .await;
     let ticket_id = ticket["id"].as_str().unwrap();
     let (_, ticket_before) = app
         .get(&app.admin, &format!("/v1/tickets/{ticket_id}"))
@@ -455,10 +457,10 @@ async fn specification_reset_clears_shared_content_and_preserves_history_and_lin
         ticket_before
     );
     assert_eq!(
-        app.get(&app.admin, &format!("/v1/checks/{check_id}"))
+        app.get(&app.admin, &format!("/v1/behaviors/{behavior_id}"))
             .await
             .1,
-        check_before
+        behavior_before
     );
     socket.close(None).await.unwrap();
     let (status, new_node) = app

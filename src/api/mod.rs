@@ -2,8 +2,8 @@
 //! malformed input gets teaching errors, not bare 400s.
 
 pub mod agent_chat;
+pub mod behaviors;
 pub mod bugs;
-pub mod checklist;
 pub mod claims;
 pub mod codex_connection;
 pub mod diagrams;
@@ -28,7 +28,6 @@ pub mod shares;
 pub mod spec_history;
 pub mod speech;
 pub mod tags;
-pub mod testruns;
 pub mod ticket_document;
 pub mod tickets;
 pub mod tokens;
@@ -276,7 +275,7 @@ pub async fn verification_page() -> impl axum::response::IntoResponse {
     secure_html(INDEX_HTML)
 }
 
-/// `GET /environments` — the registry of places a check can be run.
+/// `GET /environments` — the registry of places the software runs.
 pub async fn environments_page() -> impl axum::response::IntoResponse {
     secure_html(INDEX_HTML)
 }

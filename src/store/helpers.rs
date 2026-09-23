@@ -142,7 +142,7 @@ pub fn ensure_project_writable(conn: &Connection, project: &str) -> ApiResult<()
     Err(ApiError::conflict(
         "project.archived",
         format!(
-            "Project '{project}' was archived on {} and is frozen: no ticket, claim, transition, comment, question, tag, schedule or checklist write is accepted under it. Reading keeps working — GET the tickets, events and questions as usual. This is reversible and a human decides: ask an admin to POST /v1/projects/{project}/unarchive if the work is live again. Do not retry in the meantime; nothing about this call will start working on its own.",
+            "Project '{project}' was archived on {} and is frozen: no ticket, claim, transition, comment, question, tag, schedule, behavior or run write is accepted under it. Reading keeps working — GET the tickets, events and questions as usual. This is reversible and a human decides: ask an admin to POST /v1/projects/{project}/unarchive if the work is live again. Do not retry in the meantime; nothing about this call will start working on its own.",
             iso(at)
         ),
     )

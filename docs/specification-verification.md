@@ -44,5 +44,6 @@ Example:
   remain, then retry successfully.
 - Evidence: The recorded outcome and supporting artifacts for that check.
 
-This decision establishes product terminology. The label change does not
-migrate existing check/case/verdict storage, API names, or execution workflows.
+In the product, a verification case is a **behavior** and evidence is the
+**results** reported against the tests linked to it; see
+[verification.md](verification.md).

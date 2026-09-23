@@ -261,8 +261,6 @@ export interface DeletedInitiative {
   project: string
   entries: number
   bytes: number
-  /** Checks detached rather than deleted; only ever non-zero with `force`. */
-  detached_checks: number
   /**
    * Tickets whose `initiative:<id>` tag now names nothing. Untouched — the
    * roadmap keeps them visible under `uninitiated` — but worth telling the
@@ -271,21 +269,9 @@ export interface DeletedInitiative {
   tagged_tickets: number
 }
 
-/**
- * Delete an initiative and its entries.
- *
- * `force` detaches the verification checks filed under it instead of refusing.
- * Without it a single check answers `409 conflict.initiative_has_checks`, which
- * the page turns into a second, explicit confirmation rather than retrying
- * behind the reader's back.
- */
-export function deleteInitiative(
-  token: string,
-  id: string,
-  force = false,
-): Promise<DeletedInitiative> {
-  const q = force ? '?force=true' : ''
-  return api<DeletedInitiative>(token, `/initiatives/${encodeURIComponent(id)}${q}`, {
+/** Delete an initiative and its entries. */
+export function deleteInitiative(token: string, id: string): Promise<DeletedInitiative> {
+  return api<DeletedInitiative>(token, `/initiatives/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
 }

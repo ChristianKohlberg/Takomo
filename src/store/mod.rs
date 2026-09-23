@@ -6,9 +6,8 @@
 pub mod agent_chat;
 pub mod agent_usage;
 mod answer_grants;
+mod behaviors;
 pub mod bugs;
-mod checkcollab;
-mod checklist;
 mod claims;
 pub mod codex_connection;
 pub mod crdt;
@@ -45,7 +44,6 @@ mod schedules;
 mod shares;
 pub mod spec_history;
 mod tags;
-pub mod testruns;
 mod tickets;
 mod tokens;
 pub mod trace;
@@ -54,10 +52,9 @@ mod users;
 mod workflows;
 
 pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
-pub use checklist::{
-    glob_matches, CaseFileOutcome, CaseInput, CheckCreate, CheckFilter, CheckPatch, PolicyInput,
-    ReleasePush, VerdictInput, WorkItem, MAX_CASES_PAGE, MAX_CASES_PER_FILE, MAX_CHECKS_PAGE,
-    MAX_CHECK_GLOBS, MAX_RELEASE_PATHS,
+pub use behaviors::{
+    BehaviorCreate, BehaviorFilter, BehaviorPatch, ResultInput, RunReport, FRESH_DAYS,
+    MAX_BEHAVIORS_PAGE, MAX_RUNS_PAGE,
 };
 pub use claims::{
     ClaimMovement, ClaimStatus, ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS,
@@ -126,7 +123,6 @@ use std::sync::Mutex;
 const READ_CONNECTIONS: usize = 4;
 
 pub struct Store {
-    pub check_updates: tokio::sync::broadcast::Sender<(String, Vec<u8>)>,
     pub changes: tokio::sync::watch::Sender<u64>,
     pub live_changes: tokio::sync::broadcast::Sender<Vec<live_updates::Change>>,
     /// **The** writer. Every mutation goes through `with_tx` and this mutex, and
@@ -165,18 +161,12 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        // BEFORE the schema, not after. `CREATE TABLE IF NOT EXISTS checks`
-        // would cheerfully create an empty `checks` beside a populated `lanes`,
-        // and the rename could then never run — the database would carry both,
-        // with every row in the one nothing reads. This is the only migration
-        // step that has to precede the schema batch.
-        rename_lanes_to_checks(&conn)?;
+        // Before the schema: the batch no longer declares these tables, and
+        // nothing may be left behind that still names them.
+        drop_checklist(&conn)?;
         widen_doc_log_to_collab_objects(&conn)?;
         // Also before the batch: the batch indexes the column it adds.
         add_collab_session_minted_by(&conn)?;
-        // Same reason: the batch indexes the column this adds. It must run after
-        // `rename_lanes_to_checks`, because before that the table is `lanes`.
-        add_check_node(&conn)?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(include_str!("agent_chat.sql"))?;
         conn.execute_batch(include_str!("codebase_import.sql"))?;
@@ -211,7 +201,6 @@ impl Store {
             )?;
         }
         conn.execute_batch(include_str!("ticket_document_scheduling.sql"))?;
-        checkcollab::seed_existing(&conn)?;
         // After the schema and the additive migrations, because it writes into
         // `crdt_updates` and reads the `nodes` column both of those provide.
         mindmaps::adopt_legacy_nodes(&conn)?;
@@ -240,7 +229,6 @@ impl Store {
         };
 
         Ok(Store {
-            check_updates: tokio::sync::broadcast::channel(256).0,
             changes: tokio::sync::watch::channel(0).0,
             live_changes: tokio::sync::broadcast::channel(256).0,
             conn: Mutex::new(conn),
@@ -531,20 +519,6 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> ApiResult<bool> {
     Ok(false)
 }
 
-/// Rename the checklist `lanes` concept to `checks`, on a database that predates
-/// the rename. Runs BEFORE the schema batch — see `Store::open`.
-///
-/// Why the concept was renamed at all: `lane` already meant "the initiative a
-/// feature is worked in" on the roadmap and in `/initiatives`, so one product
-/// carried two unrelated lanes. The verification one became `check`.
-///
-/// The column is `check_id`, not `check`, because `CHECK` is a SQL keyword.
-///
-/// Each step is guarded on "the old name is here and the new one is not", so
-/// this is a no-op on a fresh database and on every boot after the first. Ids
-/// are deliberately NOT rewritten: an existing row keeps its `lane-…` primary
-/// key, because an id is opaque and rewriting primary keys to make a prefix
-/// pretty is the one part of this rename that could lose data.
 /// Widen the document update log and sync tickets to any collaborative object.
 ///
 /// `/documents` shipped first, so both tables were written in terms of
@@ -554,8 +528,7 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> ApiResult<bool> {
 /// two parallel logs to drift.
 ///
 /// **It runs BEFORE the `CREATE TABLE IF NOT EXISTS` batch, and that ordering is
-/// half the correctness argument** — the same one `rename_lanes_to_checks`
-/// below makes. Run it after, and `CREATE TABLE IF NOT EXISTS crdt_updates`
+/// half the correctness argument**. Run it after, and `CREATE TABLE IF NOT EXISTS crdt_updates`
 /// would already have made an empty table beside the populated `doc_updates`;
 /// this function would then see its target present, decline to copy, and every
 /// existing document would come back blank.
@@ -672,51 +645,18 @@ fn widen_inside_transaction(conn: &Connection) -> ApiResult<()> {
     Ok(())
 }
 
-fn rename_lanes_to_checks(conn: &Connection) -> ApiResult<()> {
-    if has_table(conn, "lanes")? && !has_table(conn, "checks")? {
-        // SQLite updates the REFERENCES clauses in other tables for us, so
-        // `cases.lane REFERENCES lanes(id)` follows the table to its new name.
-        conn.execute("ALTER TABLE lanes RENAME TO checks", [])?;
-    }
-    if has_table(conn, "lane_globs")? && !has_table(conn, "check_globs")? {
-        conn.execute("ALTER TABLE lane_globs RENAME TO check_globs", [])?;
-    }
-    if has_table(conn, "check_globs")?
-        && has_column(conn, "check_globs", "lane")?
-        && !has_column(conn, "check_globs", "check_id")?
-    {
-        conn.execute("ALTER TABLE check_globs RENAME COLUMN lane TO check_id", [])?;
-    }
-    if has_table(conn, "cases")?
-        && has_column(conn, "cases", "lane")?
-        && !has_column(conn, "cases", "check_id")?
-    {
-        conn.execute("ALTER TABLE cases RENAME COLUMN lane TO check_id", [])?;
-    }
-    // The old indexes survive a table rename under their old names, and the
-    // schema batch is about to create identically-shaped ones under the new
-    // names. Drop the old names rather than carry two indexes over one column.
-    for stale in ["idx_lanes_project", "idx_lanes_epic", "idx_cases_lane"] {
-        conn.execute(&format!("DROP INDEX IF EXISTS {stale}"), [])?;
-    }
-    Ok(())
-}
-
 /// Idempotent, additive, non-destructive startup migrations. Runs after the
 /// `CREATE TABLE IF NOT EXISTS` schema on every open. It only ever ADDs missing
 /// columns/indexes on a database that predates them — it never drops, rewrites,
 /// or recreates existing data, so it is safe to run against a populated live DB
 /// on every boot.
 ///
-/// The one step that does not fit that description is `rename_lanes_to_checks`,
-/// which is why it lives in its own function and runs before the schema.
 /// Add `crdt_sessions.minted_by` to a database that predates it.
 ///
 /// BEFORE the schema batch, not in `migrate` with the other additive columns,
 /// because the batch also creates an INDEX on this column: on an older database
 /// `CREATE TABLE IF NOT EXISTS crdt_sessions` correctly does nothing, and the
-/// index then refers to a column that is not there yet and the open fails. The
-/// same ordering trap `rename_lanes_to_checks` carries a note about.
+/// index then refers to a column that is not there yet and the open fails.
 fn add_collab_session_minted_by(conn: &Connection) -> ApiResult<()> {
     let columns: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(crdt_sessions)")?;
@@ -742,21 +682,41 @@ fn add_collab_session_minted_by(conn: &Connection) -> ApiResult<()> {
     Ok(())
 }
 
-/// Add `checks.node` to a database that predates it.
-///
-/// BEFORE the schema batch, for the reason `add_collab_session_minted_by` gives
-/// and I got wrong here first: the batch creates an INDEX on this column, and on
-/// an existing `checks` table `CREATE TABLE IF NOT EXISTS` correctly does
-/// nothing — so the index would name a column that is not there yet and the open
-/// would fail. Caught by the test that opens a pre-rename database.
-fn add_check_node(conn: &Connection) -> ApiResult<()> {
-    let columns: Vec<String> = {
-        let mut stmt = conn.prepare("PRAGMA table_info(checks)")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-        rows.collect::<rusqlite::Result<Vec<String>>>()?
-    };
-    if !columns.is_empty() && !columns.iter().any(|c| c == "node") {
-        conn.execute("ALTER TABLE checks ADD COLUMN node TEXT", [])?;
+/// Remove the checklist and test-run model, replaced by behaviors
+/// (`docs/verification.md`). It never reached production, so its rows are
+/// dropped rather than converted: a check/case/verdict has no faithful reading
+/// as a behavior with linked tests, and inventing one would be inventing
+/// evidence. Guarded per table, so it is a no-op on a fresh database and on
+/// every boot after the first.
+fn drop_checklist(conn: &Connection) -> ApiResult<()> {
+    // Children before parents, so foreign keys never see a dangling row.
+    for table in [
+        "test_run_results",
+        "test_run_cases",
+        "test_runs",
+        "test_definition_revisions",
+        "test_specification_revisions",
+        "case_environments",
+        "check_environments",
+        "case_verdicts",
+        "cases",
+        "check_globs",
+        "checks",
+        "lane_globs",
+        "lanes",
+        "checklist_policies",
+        "release_orphan_globs",
+        "release_paths",
+        "releases",
+    ] {
+        conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+    }
+    // A check's live-edit history was kept in the shared CRDT log.
+    if has_table(conn, "crdt_updates")? && has_column(conn, "crdt_updates", "object_kind")? {
+        conn.execute("DELETE FROM crdt_updates WHERE object_kind = 'check'", [])?;
+    }
+    if has_table(conn, "crdt_sessions")? && has_column(conn, "crdt_sessions", "object_kind")? {
+        conn.execute("DELETE FROM crdt_sessions WHERE object_kind = 'check'", [])?;
     }
     Ok(())
 }
@@ -1059,41 +1019,6 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN \"user\" TEXT"), [])?;
         }
     }
-    // case_verdicts.environment: where the verdict was observed. Nullable, and
-    // NULL is exactly right for every existing row — a verdict recorded before
-    // environments existed states no environment, which is not the same as an
-    // unknown one. Not back-filled: inventing a location for a past observation
-    // would be inventing evidence.
-    let verdict_cols: Vec<String> = {
-        let mut stmt = conn.prepare("PRAGMA table_info(case_verdicts)")?;
-        let cols = stmt
-            .query_map([], |r| r.get::<_, String>(1))?
-            .collect::<Result<Vec<_>, _>>()?;
-        cols
-    };
-    if !verdict_cols.is_empty() && !verdict_cols.iter().any(|c| c == "environment") {
-        conn.execute("ALTER TABLE case_verdicts ADD COLUMN environment TEXT", [])?;
-    }
-    // checks.initiative: which initiative's conversation agreed this check should
-    // exist. Nullable, and NULL is exactly right for every existing row — a check
-    // filed before the link existed belongs to no initiative, which is a fact
-    // rather than a gap. Not back-filled from the epic's `initiative:` tag: that
-    // would assert a link nobody made.
-    let check_cols: Vec<String> = {
-        let mut stmt = conn.prepare("PRAGMA table_info(checks)")?;
-        let cols = stmt
-            .query_map([], |r| r.get::<_, String>(1))?
-            .collect::<Result<Vec<_>, _>>()?;
-        cols
-    };
-    if !check_cols.is_empty() && !check_cols.iter().any(|c| c == "initiative") {
-        conn.execute("ALTER TABLE checks ADD COLUMN initiative TEXT", [])?;
-    }
-    // After the column is guaranteed to exist.
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_checks_initiative ON checks(initiative) WHERE initiative IS NOT NULL",
-        [],
-    )?;
     // answer_grants.user: which person an answer link was minted FOR. Nullable —
     // an older grant, and any grant handed to an outside expert, carries only its
     // free-form `actor`. Non-NULL is what lets the grant satisfy an assignee-gated
@@ -1124,29 +1049,6 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
-    // The person behind a verdict, in the three places a verdict is recorded: the
-    // append-only history (`case_verdicts.user`, the permanent record) and the two
-    // mirrors of the latest human verdict. All nullable, and NULL is right for
-    // every existing row — those verdicts were recorded before a credential could
-    // name anybody, and inventing a person for them would be worse than admitting
-    // the gap.
-    for (table, column) in [
-        ("cases", "human_user"),
-        ("case_environments", "human_user"),
-        ("case_verdicts", "\"user\""),
-    ] {
-        let cols: Vec<String> = {
-            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-            let cols = stmt
-                .query_map([], |r| r.get::<_, String>(1))?
-                .collect::<Result<Vec<_>, _>>()?;
-            cols
-        };
-        let bare = column.trim_matches('"');
-        if !cols.is_empty() && !cols.iter().any(|c| c == bare) {
-            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"), [])?;
-        }
-    }
     // questions.assignee: the person this decision is waiting on. Nullable, and
     // NULL on every existing row is right — they were routed by expertise alone.
     let question_assignee_cols: Vec<String> = {
@@ -1164,7 +1066,6 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
         "CREATE INDEX IF NOT EXISTS idx_questions_assignee ON questions(assignee) WHERE assignee IS NOT NULL",
         [],
     )?;
-    testruns::import_legacy(conn, None)?;
     Ok(())
 }
 
@@ -1845,293 +1746,65 @@ CREATE TABLE IF NOT EXISTS oauth_issued (
 CREATE INDEX IF NOT EXISTS idx_oauth_issued_family ON oauth_issued(family);
 CREATE INDEX IF NOT EXISTS idx_oauth_issued_refresh ON oauth_issued(refresh_hash);
 
--- Checklist. A release is an ordered marker in a project's history, pushed by the
--- agent that merged the work; `seq` is monotonic per project so a release-count
--- expiry policy ("retest every 5 releases") is arithmetic rather than a date
--- comparison. `ref` is the tag or full sha, unique per project so pushing the same
--- release twice is a conflict rather than a silent duplicate.
-CREATE TABLE IF NOT EXISTS releases (
-  id TEXT PRIMARY KEY,
-  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  ref TEXT NOT NULL,
-  seq INTEGER NOT NULL,
-  note TEXT,
-  pushed_by TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  UNIQUE(project, ref),
-  UNIQUE(project, seq)
-);
-CREATE INDEX IF NOT EXISTS idx_releases_project_seq ON releases(project, seq);
-
--- The paths the release's diff touched. Supplied by the pusher (it has the tree
--- checked out; the server does not clone anything) and intersected against check
--- globs to decide what went stale.
-CREATE TABLE IF NOT EXISTS release_paths (
-  release TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
-  path TEXT NOT NULL,
-  PRIMARY KEY (release, path)
-) WITHOUT ROWID;
-
--- Check globs that matched NO file in this release's tree. An orphaned glob is the
--- feature's worst failure mode — it reads as "still covered" while covering
--- nothing — so it is recorded per release and excluded from coverage rather than
--- counted.
-CREATE TABLE IF NOT EXISTS release_orphan_globs (
-  release TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
-  glob TEXT NOT NULL,
-  PRIMARY KEY (release, glob)
-) WITHOUT ROWID;
-
--- Inherited checklist policy. `epic = ''` is the project-level default; a row with
--- an epic ticket id overrides it for that epic's checks. Empty string rather than
--- NULL because SQLite treats NULLs as distinct in a UNIQUE index, which would
--- allow two project-level defaults.
-CREATE TABLE IF NOT EXISTS checklist_policies (
-  id TEXT PRIMARY KEY,
-  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  epic TEXT NOT NULL DEFAULT '',
-  verification TEXT,
-  expiry_days INTEGER,
-  expiry_releases INTEGER,
-  updated_at INTEGER NOT NULL,
-  UNIQUE(project, epic)
-);
-
--- A check is one action with one entry precondition at one layer. `body` is
--- free-form prose an agent or a human can follow — there is deliberately no step
--- model and no dependency graph, because the precondition is a statement about
--- data state, which is what keeps checks independently runnable.
-CREATE TABLE IF NOT EXISTS checks (
-  id TEXT PRIMARY KEY,
-  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  epic TEXT,
-  -- The initiative whose conversation agreed this check should exist.
-  --
-  -- A DIRECT reference rather than one derived through the epic's
-  -- `initiative:<id>` tag, because the moment a characterisation test gets
-  -- agreed is a conversation about the feature, which is usually BEFORE any
-  -- epic exists to hang it from. Deriving it would make the link unstateable
-  -- exactly when it is being made.
-  --
-  -- No REFERENCES clause, matching `epic` directly above: validity is enforced
-  -- in Rust so a wrong id gets a teaching 422 instead of an opaque FOREIGN KEY
-  -- failure, and a dangling reference stays readable rather than blocking the
-  -- row.
-  initiative TEXT,
-  -- The mindmap node this check verifies.
-  --
-  -- The same shape as `epic` and `initiative` above, and for the same reason: a
-  -- check is agreed while somebody is looking at a part of the plan, and the
-  -- plan's parts are nodes. Without this the tests view can say what a check is
-  -- FOR only in prose, and "which parts of this plan are actually verified" has
-  -- no answer the software can give.
-  --
-  -- No REFERENCES clause, matching the two above: validity is checked in Rust so
-  -- a wrong id is a teaching 422 rather than an opaque FOREIGN KEY failure, and
-  -- a node deleted from a brainstorm leaves the check readable rather than
-  -- taking it with it. Deleting a map is ordinary; losing its verification
-  -- record is not.
-  node TEXT,
-  title TEXT NOT NULL,
-  body TEXT NOT NULL DEFAULT '',
-  precondition TEXT NOT NULL DEFAULT '',
-  layer TEXT NOT NULL DEFAULT 'api',
-  severity TEXT NOT NULL DEFAULT 'advisory',
-  verification TEXT,
-  expiry_days INTEGER,
-  expiry_releases INTEGER,
-  cost_agent_minutes INTEGER,
-  cost_human_minutes INTEGER,
-  metadata TEXT NOT NULL DEFAULT 'null',
-  version INTEGER NOT NULL DEFAULT 1,
+-- Verification (docs/verification.md). A behavior is what the software must do,
+-- written for people and optionally tied to a section of the project's plan.
+-- Tests are external and identified only by a key the reporter chooses
+-- (`playwright:editor.spec.ts › keeps edits`); Takomo never stores test code.
+-- A behavior's status is computed from the latest result of each linked key,
+-- never stored, so it cannot drift from the evidence.
+CREATE TABLE IF NOT EXISTS behaviors (
+  id         TEXT PRIMARY KEY,
+  project    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  -- Plan node id. Not a foreign key: sections live in the plan's CRDT, and a
+  -- removed section is reported as such rather than silently unlinking.
+  section    TEXT,
+  title      TEXT NOT NULL,
+  statement  TEXT NOT NULL DEFAULT '',
   created_by TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  archived_at INTEGER
+  updated_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_checks_project ON checks(project);
-CREATE INDEX IF NOT EXISTS idx_checks_epic ON checks(epic) WHERE epic IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_checks_node ON checks(node) WHERE node IS NOT NULL;
--- The index on `initiative` is created in `migrate()`, NOT here. This batch runs
--- before the ALTER that adds the column to a pre-rename database, so indexing it
--- here fails on exactly the databases the migration exists for.
+CREATE INDEX IF NOT EXISTS idx_behaviors_project ON behaviors(project, title);
+CREATE INDEX IF NOT EXISTS idx_behaviors_section ON behaviors(section) WHERE section IS NOT NULL;
 
--- Which paths of the application under test a check claims to exercise. Declared by
--- hand and known to rot; `release_orphan_globs` is how the rot becomes visible.
-CREATE TABLE IF NOT EXISTS check_globs (
-  check_id TEXT NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
-  glob TEXT NOT NULL,
-  PRIMARY KEY (check_id, glob)
+CREATE TABLE IF NOT EXISTS behavior_tests (
+  behavior TEXT NOT NULL REFERENCES behaviors(id) ON DELETE CASCADE,
+  test_key TEXT NOT NULL,
+  PRIMARY KEY (behavior, test_key)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_behavior_tests_key ON behavior_tests(test_key);
 
--- One executable case: a check crossed with one parameter assignment. `key` is a
--- stable identity derived from that assignment, so regenerating a model after
--- adding a parameter matches surviving cases and keeps their history instead of
--- orphaning it. A case dropped by regeneration is `retired_at`-stamped, never
--- deleted, so its verdicts remain auditable.
-CREATE TABLE IF NOT EXISTS cases (
-  id TEXT PRIMARY KEY,
-  check_id TEXT NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
-  key TEXT NOT NULL,
-  label TEXT NOT NULL DEFAULT '',
-  assignment TEXT NOT NULL DEFAULT '{}',
-  seeded INTEGER NOT NULL DEFAULT 0,
-  agent_verdict TEXT,
-  agent_at INTEGER,
-  agent_by TEXT,
-  agent_release TEXT,
-  human_verdict TEXT,
-  human_at INTEGER,
-  human_by TEXT,
-  -- WHICH PERSON approved it (users.id), where `human_by` is only the free-form
-  -- actor string the credential carried. "A person approved this case" is the
-  -- strongest claim this table makes, and an unresolvable name is a poor way to
-  -- make it: two `human:alice` tokens are indistinguishable, and nothing survives
-  -- somebody leaving. Nullable, because a verdict from a credential bound to
-  -- nobody is still a verdict.
-  --
-  -- A mirror of the last human verdict, like the columns around it;
-  -- `case_verdicts.user` is the permanent per-verdict record.
-  human_user TEXT REFERENCES users(id),
-  human_release TEXT,
-  stale_since TEXT,
-  retired_at INTEGER,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  UNIQUE(check_id, key)
-);
-CREATE INDEX IF NOT EXISTS idx_cases_check ON cases(check_id);
-CREATE INDEX IF NOT EXISTS idx_cases_live ON cases(check_id) WHERE retired_at IS NULL;
-
--- Append-only verdict history. The `cases` row carries the LAST agent verdict and
--- the LAST human verdict as separate columns because they are separate facts — a
--- case can be agent-verified and human-approved, and a policy may require both —
--- while this table keeps every verdict ever recorded.
-CREATE TABLE IF NOT EXISTS case_verdicts (
-  id TEXT PRIMARY KEY,
-  case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-  actor_kind TEXT NOT NULL,
-  actor TEXT NOT NULL,
-  -- The person behind the credential that recorded this verdict (users.id), or
-  -- NULL for a machine token. THIS is the permanent record of who: the mirrors on
-  -- `cases` and `case_environments` only hold the latest, while this table is
-  -- append-only and is what an audit reads.
-  --
-  -- Kept for an agent verdict too, not just a human one. An agent token can
-  -- belong to somebody's own automation, and "whose agent" is worth knowing.
-  "user" TEXT REFERENCES users(id),
-  verdict TEXT NOT NULL,
-  note TEXT,
-  release TEXT,
-  at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_case_verdicts_case ON case_verdicts(case_id);
-
-
--- Editable checks/cases are definitions. Runs pin immutable snapshots; observations
--- never overwrite the definition or a previous attempt.
-CREATE TABLE IF NOT EXISTS test_definition_revisions (
-  id TEXT PRIMARY KEY,
-  check_id TEXT NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
-  snapshot TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_test_revisions_check ON test_definition_revisions(check_id, created_at);
-CREATE TABLE IF NOT EXISTS test_specification_revisions (
-  id TEXT PRIMARY KEY,
-  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  snapshot TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS test_runs (
-  id TEXT PRIMARY KEY,
-  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL DEFAULT 'execution' CHECK(kind IN ('execution','legacy')),
-  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','cancelled')),
-  environment TEXT,
-  environment_snapshot TEXT,
-  code_ref TEXT,
-  retry_of TEXT REFERENCES test_runs(id) ON DELETE SET NULL,
-  created_by TEXT NOT NULL,
-  executor TEXT,
-  created_at INTEGER NOT NULL,
-  started_at INTEGER,
-  finished_at INTEGER,
+-- One execution reported by CI or an agent: the commit it ran against and, for
+-- an agent that chose which tests to run, why it chose them.
+CREATE TABLE IF NOT EXISTS verification_runs (
+  id        TEXT PRIMARY KEY,
+  project   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  "commit"  TEXT,
+  note      TEXT,
+  actor     TEXT NOT NULL,
+  "user"    TEXT REFERENCES users(id),
+  at        INTEGER NOT NULL,
+  -- Replay protection for a retried report: (project, actor, key) is unique,
+  -- and `body_hash` refuses the same key reused for a different report.
   idempotency_key TEXT,
-  request_hash TEXT,
-  UNIQUE(project, idempotency_key)
+  body_hash TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_test_runs_project ON test_runs(project, created_at DESC, id);
-CREATE TABLE IF NOT EXISTS test_run_cases (
-  run_id TEXT NOT NULL REFERENCES test_runs(id) ON DELETE CASCADE,
-  case_id TEXT NOT NULL,
-  check_id TEXT NOT NULL,
-  definition_revision TEXT REFERENCES test_definition_revisions(id),
-  specification_revision TEXT REFERENCES test_specification_revisions(id),
-  case_snapshot TEXT,
-  PRIMARY KEY(run_id, case_id)
-) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS idx_test_run_cases_check ON test_run_cases(check_id, run_id);
-CREATE TABLE IF NOT EXISTS test_run_results (
-  id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL,
-  case_id TEXT NOT NULL,
-  actor_kind TEXT NOT NULL CHECK(actor_kind IN ('agent','human')),
-  actor TEXT NOT NULL,
-  user_id TEXT,
-  verdict TEXT NOT NULL CHECK(verdict IN ('pass','fail','blocked','unreachable')),
-  note TEXT,
-  evidence TEXT NOT NULL DEFAULT '[]',
-  recorded_at INTEGER NOT NULL,
-  idempotency_key TEXT NOT NULL,
-  request_hash TEXT NOT NULL,
-  legacy_verdict TEXT UNIQUE,
-  FOREIGN KEY(run_id, case_id) REFERENCES test_run_cases(run_id, case_id) ON DELETE CASCADE,
-  UNIQUE(run_id, idempotency_key),
-  UNIQUE(run_id, case_id, actor_kind)
-);
+CREATE INDEX IF NOT EXISTS idx_verification_runs_project ON verification_runs(project, at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_verification_runs_idem
+  ON verification_runs(project, actor, idempotency_key) WHERE idempotency_key IS NOT NULL;
 
--- Which environments a check must be verified in.
---
--- EMPTY is a legitimate steady state, not a gap: a check can be genuinely
--- environment-agnostic, and every check filed before this existed is one. A
--- check that declares nothing keeps using the verdict columns on `cases`; a
--- check that declares anything uses `case_environments` instead, and nothing
--- writes both.
-CREATE TABLE IF NOT EXISTS check_environments (
-  check_id    TEXT NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
-  environment TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
-  PRIMARY KEY (check_id, environment)
+-- `project` and `at` are copied from the run so "latest result per key in a
+-- project" is one index range, not a join per key.
+CREATE TABLE IF NOT EXISTS verification_results (
+  run      TEXT NOT NULL REFERENCES verification_runs(id) ON DELETE CASCADE,
+  project  TEXT NOT NULL,
+  test_key TEXT NOT NULL,
+  outcome  TEXT NOT NULL CHECK (outcome IN ('pass', 'fail')),
+  detail   TEXT,
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (run, test_key)
 ) WITHOUT ROWID;
-
--- How one case stands in ONE environment.
---
--- The nine columns are lifted verbatim from `cases`, because they are the same
--- nine facts asked in a narrower scope. A row exists only once something has
--- been recorded: a pair nobody has run has no row and reads `never`, which is
--- both correct and free. Creating them eagerly would fan `file_cases` out to
--- cases x environments inserts — a 5,000-case check across four environments is
--- 20,000 rows in one transaction holding the write mutex every claim waits on.
-CREATE TABLE IF NOT EXISTS case_environments (
-  case_id       TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-  environment   TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
-  agent_verdict TEXT,
-  agent_at      INTEGER,
-  agent_by      TEXT,
-  agent_release TEXT,
-  human_verdict TEXT,
-  human_at      INTEGER,
-  human_by      TEXT,
-  -- Which person approved it HERE. The same mirror `cases.human_user` is, per
-  -- place the check must pass: an approval in staging and one in production are
-  -- separate claims, and so is who made each.
-  human_user    TEXT REFERENCES users(id),
-  human_release TEXT,
-  stale_since   TEXT,
-  created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL,
-  PRIMARY KEY (case_id, environment)
-) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS idx_case_environments_env ON case_environments(environment);
+CREATE INDEX IF NOT EXISTS idx_verification_results_key ON verification_results(project, test_key, at);
 
 -- Where a check can actually be run: a named, project-scoped environment.
 --
@@ -2152,7 +1825,7 @@ CREATE INDEX IF NOT EXISTS idx_case_environments_env ON case_environments(enviro
 CREATE TABLE IF NOT EXISTS environments (
   id               TEXT PRIMARY KEY,
   project          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  -- The handle an agent types. Not patchable: checks and tool calls carry it,
+  -- The handle an agent types. Not patchable: tool calls carry it,
   -- and a silent rename would break every one of them.
   slug             TEXT NOT NULL,
   name             TEXT NOT NULL,
@@ -2202,8 +1875,8 @@ CREATE TABLE IF NOT EXISTS documents (
   -- table and has no orphaned-directory problem.
   path        TEXT NOT NULL DEFAULT '',
   status      TEXT NOT NULL DEFAULT 'draft',
-  -- The initiative this was distilled from, if any. No REFERENCES clause,
-  -- matching `checks.initiative`: validity is enforced in Rust so a wrong id
+  -- The initiative this was distilled from, if any. No REFERENCES clause:
+  -- validity is enforced in Rust so a wrong id
   -- gets a teaching 422 instead of an opaque FOREIGN KEY failure, and a dangling
   -- reference stays readable rather than blocking the row.
   initiative  TEXT,
@@ -2239,7 +1912,7 @@ CREATE TABLE IF NOT EXISTS crdt_updates (
   object_kind TEXT NOT NULL,
   -- No REFERENCES clause, and it cannot have one: this points at whichever of
   -- two tables the kind names. Validity is enforced in Rust — the same call
-  -- `checks.epic` and `documents.initiative` already make, for the same reason
+  -- `documents.initiative` already makes, for the same reason
   -- (a teaching 422 rather than an opaque FOREIGN KEY failure). The cascade the
   -- FK used to provide is `Store::purge_collab`, called from each kind's own
   -- delete path.
@@ -2324,11 +1997,7 @@ CREATE TABLE IF NOT EXISTS crdt_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_crdt_sessions_object ON crdt_sessions(object_id);
 CREATE INDEX IF NOT EXISTS idx_crdt_sessions_minted_by ON crdt_sessions(minted_by);
-CREATE TRIGGER IF NOT EXISTS cleanup_check_crdt AFTER DELETE ON checks
-BEGIN
- DELETE FROM crdt_updates WHERE object_id=OLD.id;
- DELETE FROM crdt_sessions WHERE object_id=OLD.id;
-END;
+DROP TRIGGER IF EXISTS cleanup_check_crdt;
 CREATE TRIGGER IF NOT EXISTS cleanup_project_crdt_sessions AFTER DELETE ON projects
 BEGIN
  DELETE FROM crdt_sessions WHERE project=OLD.id;

@@ -160,78 +160,52 @@ async function main() {
     "environments lists what a runner needs"
   );
 
-  // A check that must pass in BOTH, so the ambiguity rule has something to bite.
-  const check = await call("takomo_check_file", {
+  // Describe a behavior, report a run against it, read the status back.
+  const behavior = await call("takomo_behavior_create", {
     project: PROJECT,
-    title: `e2e check ${Date.now()}`,
-    layer: "api",
-    severity: "advisory",
-    environments: ["e2e-staging", "e2e-prod"],
-    globs: ["src/e2e/**"],
+    title: `e2e behavior ${Date.now()}`,
+    statement: "Saving twice keeps one record.",
+    tests: ["e2e:save-twice"],
   });
-  expect(!check.isError && check.data.check?.id, "filed a check");
-  expect(check.data.check?.environments?.length === 2, "the check declares both environments");
-  const checkId = check.data.check.id;
+  expect(!behavior.isError && behavior.data.id?.startsWith("bhv-"), "created a behavior");
+  expect(behavior.data.status === "untested", "a new behavior is untested");
+  const behaviorId = behavior.data.id;
 
-  const filed = await call("takomo_cases_file", {
-    check: checkId,
-    cases: [
-      { key: "n=1", label: "one", assignment: { n: 1 } },
-      { key: "n=2", label: "two", assignment: { n: 2 } },
+  const run = await call("takomo_run_report", {
+    project: PROJECT,
+    commit: "e2e0001",
+    note: "stdio e2e",
+    results: [
+      { test: "e2e:save-twice", outcome: "pass" },
+      { test: "e2e:unlinked", outcome: "fail", detail: "no behavior yet" },
     ],
   });
-  expect(!filed.isError && filed.data.live === 2, "filed two cases");
+  expect(!run.isError && run.data.run?.passed === 1 && run.data.run?.failed === 1, "reported a run");
+  expect(run.data.unlinked?.includes("e2e:unlinked"), "the reply names the unlinked key");
 
-  const shown = await call("takomo_check", { id: checkId, cases: true });
-  expect(!shown.isError && shown.data.cases?.length === 2, "check shows its cases");
-  const caseId = shown.data.cases[0].id;
-  expect(
-    shown.data.cases[0].environments?.length === 2,
-    "each case carries a reading per declared environment"
-  );
+  const shown = await call("takomo_behavior", { id: behaviorId });
+  expect(!shown.isError && shown.data.status === "verified", "a fresh pass verifies the behavior");
+  expect(shown.data.history?.[0]?.note === "stdio e2e", "history carries the run's note");
 
-  // The refusal: two environments declared, so a bare verdict does not say what
-  // was observed. Filing a staging run as production would be worse than no
-  // record, which is why this is an error rather than a default.
-  const ambiguous = await call("takomo_verdict", { case: caseId, verdict: "pass" });
-  expect(
-    ambiguous.isError && ambiguous.data.code === "conflict.environment_ambiguous",
-    "a verdict that does not say where is refused when that is ambiguous"
-  );
-
-  const scoped = await call("takomo_verdict", {
-    case: caseId,
-    verdict: "pass",
-    environment: "e2e-staging",
+  // Linking the failing key fails the behavior: any failure wins.
+  const linked = await call("takomo_behavior_update", {
+    id: behaviorId,
+    tests: ["e2e:save-twice", "e2e:unlinked"],
   });
-  expect(!scoped.isError, "a verdict naming its environment is recorded");
-  expect(
-    scoped.data.case?.state === "never",
-    "one environment passing does not verify the case while the other is untouched"
-  );
+  expect(!linked.isError && linked.data.status === "failing", "linking a failing test fails it");
 
-  // `fail` without a note is refused: a failure nobody described is one nobody
-  // can act on.
-  const bareFail = await call("takomo_verdict", {
-    case: caseId,
-    verdict: "fail",
-    environment: "e2e-prod",
+  const bad = await call("takomo_run_report", {
+    project: PROJECT,
+    results: [{ test: "e2e:x", outcome: "skipped" }],
   });
-  expect(bareFail.isError, "a fail with no note is refused");
+  expect(bad.isError, "an outcome other than pass/fail is refused");
 
-  const worklist = await call("takomo_worklist", { project: PROJECT });
-  expect(!worklist.isError && worklist.data.agent, "worklist splits by who can clear it");
-  const mine = (worklist.data.agent.items ?? []).filter((i) => i.check === checkId);
-  expect(mine.length > 0 && mine.every((i) => i.environment_slug), "every item says where to run it");
-
-  await call("takomo_coverage", { project: PROJECT });
-  const gate = await call("takomo_gate", { project: PROJECT });
-  expect(!gate.isError && typeof gate.data.blocked === "boolean", "the gate answers can-this-ship");
-
-  // One last read, so the run also exercises the list route it started from.
-  // Nothing is torn down: a check and its verdicts are the record of what was
-  // verified, and the environment slugs are reused by the next run.
-  await call("takomo_checks", { project: PROJECT });
+  const summary = await call("takomo_verification", { project: PROJECT });
+  expect(!summary.isError && summary.data.summary?.failing >= 1, "the summary counts it");
+  const list = await call("takomo_behaviors", { project: PROJECT, status: "failing" });
+  expect(!list.isError && list.data.items.some((b) => b.id === behaviorId), "status filter finds it");
+  const runs = await call("takomo_runs", { project: PROJECT, limit: 5 });
+  expect(!runs.isError && runs.data.items.length > 0, "runs are listed");
 
   line(`\n=== e2e complete: ${failures === 0 ? "ALL ASSERTIONS PASSED" : failures + " ASSERTION(S) FAILED"} ===`);
   await client.close();

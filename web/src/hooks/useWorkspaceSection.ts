@@ -11,7 +11,7 @@ export function useWorkspaceSection(): [string | null, (id: string | null) => vo
       if ((search.get('section') ?? null) === id) return
       if (id) search.set('section', id)
       else search.delete('section')
-      search.delete('check')
+      search.delete('behavior')
       void navigate({ search: search.toString() }, { replace: true })
     },
     [location.search, navigate],

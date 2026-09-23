@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
-import type { Environment } from '@/lib/verification'
+import type { Environment } from '@/lib/environments'
 import { Hint } from '@/components/Hint'
 
 export interface EnvironmentCardLabels {

@@ -1,9 +1,9 @@
-import { createContext, useContext, type Dispatch, type SetStateAction } from 'react'
+import { createContext, useContext } from 'react'
 import type { Locale } from '@/lib/i18n'
 import type { Project } from '@/lib/initiatives'
 import type { Mindmap, MindmapSession } from '@/lib/mindmaps'
 import type { PlanNode } from '@/lib/plan-sections'
-import type { Check } from '@/lib/verification'
+import type { VerificationSummary } from '@/lib/behaviors'
 import type { SyncConnection } from '@/hooks/useSyncConnection'
 
 export interface SpecificationState {
@@ -23,14 +23,15 @@ export interface SpecificationState {
   serverSync?: import('@/lib/save-status').ServerSync
   connection: SyncConnection | null
   nodes: PlanNode[]
-  checks: Check[]
-  setChecks: Dispatch<SetStateAction<Check[]>>
+  /** Status counts per section, from `/verification`; null until loaded. */
+  verification: VerificationSummary | null
   refreshMap: () => Promise<Mindmap | null>
-  refreshChecks: () => Promise<Check[]>
+  refreshVerification: () => Promise<VerificationSummary | null>
   selectProject: (id: string) => void
   onError: (error: unknown) => void
   openTests: (section: string | null) => void
-  editCheck: (id: string) => void
+  /** Select a behavior (`?behavior=`), or clear the selection with null. */
+  openBehavior: (id: string | null) => void
   testsFor: (section: string) => { total: number; failing: number }
 }
 export const SpecificationContext = createContext<SpecificationState | null>(null)
