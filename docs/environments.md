@@ -1,11 +1,12 @@
-# Environments — where a check can actually be run
+# Environments — where the software runs
 
-A verdict is a claim about a running system. Until this existed, Takomo stored
-the claim and never recorded what it was made against: an agent handed "re-verify
-the six stale cases" had to be told the URL, the way to bring the thing up, and
-whether it was safe to write to it — all out of band, all going stale silently.
+A test result is a claim about a running system. An agent handed "verify this
+behavior" needs the URL, the way to bring the thing up, and whether it is safe to
+write to it — and without a registry all of that travels out of band and goes
+stale silently.
 
-An environment is that context, in the store, next to the verdicts it qualifies.
+An environment is that context, in the store, where an agent reads it before it
+runs anything.
 
 ```sh
 # what a runner reads before it runs anything
@@ -21,7 +22,7 @@ GET /v1/projects/{project}/environments
   "data_state": "production_like",
   "writable": true,
   "credentials_hint": "env:STAGING_TOKEN",
-  "notes": "Reseeded 03:00 UTC — a verdict taken just before that is worth re-running." }
+  "notes": "Reseeded 03:00 UTC — a result reported just before that is worth re-running." }
 ```
 
 ## Takomo stores; the agent computes
@@ -69,14 +70,13 @@ A new name is a new environment, and the old one is archived.
 
 ## Archived, never deleted
 
-A decommissioned box is still the evidence behind every verdict ever taken
-there, so `DELETE` archives. An archived environment leaves the default list,
+History may still name a decommissioned box, so `DELETE` archives. An archived environment leaves the default list,
 stays readable by id, and comes back with `POST /v1/environments/{id}/unarchive`
 — archiving changed nothing else about it, so restoring is a pure reversal.
 
 ## Who may write
 
-`write`, like tickets and checks — **not** `human`. An agent that has just
+`write`, like tickets and behaviors — **not** `human`. An agent that has just
 leased an ephemeral preview instance is exactly the caller this registry exists
 for, and gating registration on a person would push it straight back out of
 band.
@@ -110,9 +110,8 @@ wire and possibly landed in a log — so the check is worth having twice.
 ## An environment is not a configuration profile
 
 Related, and not the same. An environment is **where** the application runs.
-A configuration profile is **how it is configured** — the parameter assignment a
-case already carries. `docs/checklist.md` lists named configuration profiles as
-deliberately not implemented; this does not implement them, and the two should
-not be merged when they eventually meet.
+A configuration profile is **how it is configured**. Neither is modelled on
+verification results today (`docs/verification.md`), and the two should not be
+merged when they eventually meet.
 
-See also: [`checklist.md`](checklist.md), [`spec/openapi.yaml`](../spec/openapi.yaml).
+See also: [`verification.md`](verification.md), [`spec/openapi.yaml`](../spec/openapi.yaml).

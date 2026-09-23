@@ -22,9 +22,9 @@ it('resolves the map’s actual project before redirecting a bookmarked section'
   expect(await screen.findByText('/projects/actual/specification?view=map&section=mn-selected')).toBeTruthy()
   expect(getMindmap).toHaveBeenCalledWith('token', 'mm-shared')
 })
-it('preserves project, section and check on an old test link', async () => {
+it('preserves project and section on an old test link, dropping the retired check id', async () => {
   open('/verification?project=actual#n=mn-selected&c=check-one')
-  expect(await screen.findByText('/projects/actual/specification?view=tests&section=mn-selected&check=check-one')).toBeTruthy()
+  expect(await screen.findByText('/projects/actual/specification?view=tests&section=mn-selected')).toBeTruthy()
 })
 it('keeps a signed-out map bookmark in place until authentication', () => {
   open('/mindmaps#m=mm-shared&n=mn-selected')

@@ -269,7 +269,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/projects/{project}/claim-ttl",
             put(crate::api::projects::put_claim_ttl),
         )
-        // Environments: where a check can be run. Writes take `write`, not
+        // Environments: where the software runs. Writes take `write`, not
         // `human` — an agent that just leased an ephemeral instance is exactly
         // the caller this registry exists for.
         .route("/v1/projects/{project}/lane-organizer", get(crate::api::lane_organizer::get))
@@ -334,55 +334,24 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/documents/{id}/reset", post(crate::api::docs::reset))
         .route("/v1/mindmaps/{id}/reset", post(crate::api::mindmaps::reset))
         .route("/v1/initiatives/{id}/reset", post(crate::api::initiatives::reset))
-        .route("/v1/projects/{project}/test-definitions", get(crate::api::testruns::definitions))
-        .route("/v1/checks/{id}/definition", get(crate::api::testruns::definition))
-        .route("/v1/projects/{project}/test-runs", get(crate::api::testruns::list).post(crate::api::testruns::create))
-        .route("/v1/test-runs/{id}", get(crate::api::testruns::get).patch(crate::api::testruns::transition))
-        .route("/v1/test-runs/{id}/results", post(crate::api::testruns::result))
-        .route("/v1/test-runs/{id}/retry", post(crate::api::testruns::retry))
-        // Checklist: releases, checks, cases, verdicts and the derived reports.
+        // Verification: behaviors, the tests linked to them, and reported runs.
         .route(
-            "/v1/projects/{project}/releases",
-            get(crate::api::checklist::list_releases).post(crate::api::checklist::push_release),
+            "/v1/projects/{project}/behaviors",
+            get(crate::api::behaviors::list).post(crate::api::behaviors::create),
         )
         .route(
-            "/v1/projects/{project}/checks",
-            get(crate::api::checklist::list_checks).post(crate::api::checklist::create_check),
+            "/v1/behaviors/{id}",
+            get(crate::api::behaviors::get)
+                .merge(patch(crate::api::behaviors::patch))
+                .merge(axum::routing::delete(crate::api::behaviors::delete)),
         )
         .route(
-            "/v1/initiatives/{id}/verification",
-            get(crate::api::checklist::initiative_verification),
+            "/v1/projects/{project}/runs",
+            get(crate::api::behaviors::list_runs).post(crate::api::behaviors::report),
         )
         .route(
-            "/v1/projects/{project}/checklist/policy",
-            get(crate::api::checklist::get_policies).put(crate::api::checklist::put_policy),
-        )
-        .route(
-            "/v1/projects/{project}/checklist/coverage",
-            get(crate::api::checklist::coverage),
-        )
-        .route(
-            "/v1/projects/{project}/checklist/worklist",
-            get(crate::api::checklist::worklist),
-        )
-        .route(
-            "/v1/projects/{project}/checklist/gate",
-            get(crate::api::checklist::gate),
-        )
-        .route(
-            "/v1/checks/{id}",
-            get(crate::api::checklist::get_check)
-                .merge(patch(crate::api::checklist::patch_check))
-                .merge(axum::routing::delete(crate::api::checklist::archive_check)),
-        )
-        .route(
-            "/v1/checks/{id}/cases",
-            get(crate::api::checklist::list_cases).put(crate::api::checklist::file_cases),
-        )
-        .route("/v1/cases/{id}", get(crate::api::checklist::get_case))
-        .route(
-            "/v1/cases/{id}/verdict",
-            post(crate::api::checklist::record_verdict),
+            "/v1/projects/{project}/verification",
+            get(crate::api::behaviors::summary),
         )
         .route(
             "/v1/projects/{project}/document-appearance",
@@ -568,7 +537,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/mindmaps/{id}/search/status", get(crate::api::search::status))
         .route("/v1/mindmaps/{id}/search/sync", post(crate::api::search::sync))
         .route("/v1/mindmaps/{id}/outline", get(crate::api::mindmaps::outline))
-        // The plan's sections, flat: what resolves a check's `node` to a title.
+        // The plan's sections, flat: what resolves a behavior's `section` to a title.
         .route(
             "/v1/projects/{project}/nodes",
             get(crate::api::mindmaps::project_nodes),
@@ -606,7 +575,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // The sync ticket, minted exactly as a document's is — a browser
         // WebSocket cannot carry an Authorization header, so the credential has
         // to ride the handshake.
-        .route("/v1/checks/{id}/session", post(crate::api::docsync::create_check_session))
         .route("/v1/projects/{id}/session", post(crate::api::docsync::create_project_session))
         .route(
             "/v1/mindmaps/{id}/session",

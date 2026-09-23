@@ -26,11 +26,11 @@ is none yet; there is no create step, and a read-only visit never creates one.
 New sections are added inline in Document view and appear in Map at once. Both
 rules are specified in `spec/one-model-two-views.md`.
 
-Section test counts and failures open a side panel without leaving the document
+Section behavior counts and failures open a side panel without leaving the document
 or map; the Tests view provides the full catalog and can clear the section
-filter. Check editors keep their own CRDT sessions. A shared project notification
+filter. A shared project notification
 socket refreshes only the relevant server-owned data: project-scoped topic messages
-separate documents, trace, checks, inbox, tickets, agent activity, history, search,
+separate documents, trace, behaviors, inbox, tickets, agent activity, history, search,
 and project settings. Empty claims, ignored writes, usage timestamps and lease-only
 bookkeeping do not notify. Committed trigger/cascade changes do; rollback does not.
 Initial connection, reconnect and lost broadcast history request a full resync.
@@ -55,20 +55,10 @@ Inbox is the rail's footer entry, directly above the profile block; it carries
 the count of open questions, or a green check when there are none. The language
 switch is in the profile menu.
 
-The Definitions tab summarizes how many definitions are not run, verified,
-failed or outdated, narrows by that status, by text and by section, and links
-each card to its source section. An empty Runs tab explains that runs are
-created from definitions and offers a way there; a section filter that matches
-no run says so instead. A permission failure is shown once, naming the project,
-in place of an empty list.
-
-Test definitions keep the readable example separate from its technical details.
-Cases with `steps` and `expected` in their assignment show a numbered procedure
-and expected result; other parameters remain in a collapsed section as labelled
-values with a copy action, the raw JSON beneath them.
-Existing `metadata.specification.bindings` on a check appear under **Code
-references**: an array of `{file, selector, proves?, limits?}` entries, with an
-optional `bindings_source_commit` beside it naming the commit they were recorded
-against. An entry missing `file` or `selector` is skipped and the panel says so.
-References describe a mapping, not a test result; execution evidence remains in
-Runs.
+The Verification and Evidence view (`view=tests`) lists the project's
+behaviors with their computed status — verified, failing, stale or untested —
+narrowed by status, by text and by the selected section, plus the reported test
+keys no behavior links yet. `behavior={id}` in the URL opens one: its statement,
+section, linked tests with their latest results, and recent history. See
+[verification.md](verification.md). A permission failure is shown once, naming
+the project, in place of an empty list.

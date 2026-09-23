@@ -1,5 +1,10 @@
 # Checklist — a verification surface for agent fleets
 
+> **Superseded (2026-09-23).** The checklist and test-run model this led to was
+> replaced before production by behaviors with linked test keys and reported runs;
+> see [`docs/verification.md`](../verification.md). This file is kept as the record
+> of the original design conversation.
+
 Design conversation, 2026-07-31. Not yet implemented; no tickets filed. This file is the
 record so the context survives the session.
 
@@ -7,7 +12,7 @@ record so the context survives the session.
 > now called a **check**: `lane` already meant "the initiative a feature is worked in" on the
 > roadmap, and one product cannot carry two lanes. The original prose stands as written, because
 > this is the record of a conversation rather than current documentation — read `lane` here as
-> `check`. `docs/checklist.md` is the current documentation.
+> `check`. The checklist itself has since been replaced; `docs/verification.md` is the current documentation.
 
 The design was driven by a real application under test, but that application is a client system
 and its specifics are deliberately **not** in this repo — Takomo is public. The worked example
@@ -244,7 +249,7 @@ Getting coverage *up* is the stated goal, so Takomo should answer two questions:
 | Case persistence | every generated case is a row: assignment, stable id, last-checked, agent-verified, human-approved, release |
 | Kill switches | lifted out of the model; filed as standalone single-case negative lanes |
 | Lane boundary | one action + one entry precondition (state transition, not screen) |
-| Authoring process | captured as a skill: `clients/claude-skill/takomo-checklist/` |
+| Authoring process | captured as a skill: `clients/claude-skill/takomo-checklist/` (now `takomo-verification`) |
 
 ## Still open
 

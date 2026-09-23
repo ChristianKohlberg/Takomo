@@ -45,7 +45,7 @@ export function ViewSwitcher({ current, labels, onNavigate }: ViewSwitcherProps)
   return (
     <nav
       aria-label={[labels.document, labels.map, labels.tests].join(', ')}
-      className="border-border-soft bg-muted/40 flex flex-none items-center gap-0.5 rounded-lg border p-0.5"
+      className="border-border-soft bg-muted/40 flex w-full flex-none items-stretch gap-0.5 rounded-lg border p-0.5 md:w-auto"
     >
       {VIEWS.map(({ id, Icon }) => {
         const active = id === current
@@ -63,7 +63,7 @@ export function ViewSwitcher({ current, labels, onNavigate }: ViewSwitcherProps)
               onNavigate(target)
             }}
             className={[
-              'flex items-center gap-1.5 rounded-md px-2 py-2 text-[13px] font-[650] no-underline',
+              'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-center text-[13px] leading-tight font-[650] no-underline md:flex-none',
               active
                 ? 'bg-card text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',

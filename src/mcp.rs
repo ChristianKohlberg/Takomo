@@ -99,19 +99,15 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_lanes",
     "takomo_lane_show",
     "takomo_lane_handoffs",
+    "takomo_behavior",
+    "takomo_behaviors",
     "takomo_bugs",
     "takomo_bug",
     "takomo_bug_runs",
     "takomo_bug_run",
     "takomo_specification_history",
     "takomo_specification_version",
-    "takomo_test_definitions",
-    "takomo_test_runs",
-    "takomo_test_run",
-    "takomo_check",
-    "takomo_checks",
     "takomo_claim_status",
-    "takomo_coverage",
     "takomo_deps",
     "takomo_document_proposals",
     "takomo_document_read",
@@ -119,7 +115,6 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_plan_proposals",
     "takomo_documents",
     "takomo_environments",
-    "takomo_gate",
     "takomo_impact",
     "takomo_initiative_list",
     "takomo_initiative_show",
@@ -129,14 +124,14 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_projects",
     "takomo_questions",
     "takomo_ready",
-    "takomo_releases",
     "takomo_roadmap",
+    "takomo_runs",
     "takomo_schedules",
     "takomo_show",
     "takomo_users",
+    "takomo_verification",
     "takomo_whoami",
     "takomo_workflow",
-    "takomo_worklist",
 ];
 
 /// The MCP tool surface. Cloned per session by the transport's service factory;
@@ -946,36 +941,103 @@ pub struct InitiativeShowArgs {
     pub limit: Option<i64>,
     /// Opaque cursor from a previous page's `next_cursor`.
     pub cursor: Option<String>,
-    /// Include this initiative's verification standing: how many of its checks'
-    /// cases are verified, stale, failed or never run, and when one was last
-    /// verified. Off by default because it costs a scan over the checks and
-    /// cases beneath the initiative.
-    pub verification: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ReleasePushArgs {
-    /// Project the release belongs to.
+pub struct VerificationArgs {
+    /// Project to report on.
     pub project: String,
-    /// The tag or FULL commit sha this release stands for. Short shas are
-    /// ambiguous.
-    pub r#ref: String,
-    /// Optional note about the release.
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BehaviorsArgs {
+    /// Project whose behaviors to list.
+    pub project: String,
+    /// Narrow to one plan section by node id, or "none" for behaviors linked to
+    /// no section.
+    pub section: Option<String>,
+    /// Narrow by computed status: verified, failing, stale, untested.
+    pub status: Option<String>,
+    /// Case-insensitive text over title, statement and linked test keys.
+    pub q: Option<String>,
+    /// How many to return, 1..=500 (default 500). `total` always reports how
+    /// many matched.
+    pub limit: Option<i64>,
+    /// Skip this many, for reading past the first page.
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BehaviorShowArgs {
+    /// Behavior id (`bhv-…`).
+    pub id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BehaviorCreateArgs {
+    /// Project the behavior belongs to.
+    pub project: String,
+    /// What the software does, as one sentence a person can check, e.g. "A
+    /// failed save keeps the user's edits and allows retry".
+    pub title: String,
+    /// Conditions, action and expected result in prose — enough for an agent to
+    /// verify it by hand when no automated test exists yet.
+    pub statement: Option<String>,
+    /// The plan section (node id) this behavior comes from. Omit for behavior
+    /// not written in the specification yet, e.g. a regression found in use.
+    pub section: Option<String>,
+    /// Test keys that verify it, exactly as the runner reports them.
+    pub tests: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct BehaviorUpdateArgs {
+    /// Behavior id (`bhv-…`).
+    pub id: String,
+    pub title: Option<String>,
+    pub statement: Option<String>,
+    /// New plan section (node id), or "" to unlink it from any section.
+    pub section: Option<String>,
+    /// Replaces the full list of linked test keys. Read the behavior first and
+    /// send the list you want it to end with.
+    pub tests: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunResultArg {
+    /// Test key as the runner reports it.
+    pub test: String,
+    /// "pass" or "fail". A test that could not run is a fail with the reason in
+    /// `detail`; a skipped test is left out.
+    pub outcome: String,
+    /// Failure message, observation, or a link to a trace or screenshot.
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunReportArgs {
+    /// Project the run belongs to.
+    pub project: String,
+    /// The commit the tests ran against. Strongly recommended: it is how a
+    /// reader tells current evidence from old.
+    pub commit: Option<String>,
+    /// Why these tests were run — especially when you chose a subset of a
+    /// behavior's variants. The next reader sees what was skipped and why.
     pub note: Option<String>,
-    /// Paths the release's diff touched. You have the tree checked out; Takomo
-    /// clones nothing. Any check claiming a glob that matches one of these has its
-    /// cases marked stale.
-    pub touched_paths: Option<Vec<String>>,
-    /// Check globs that matched NO file in this tree. An orphaned glob reads as
-    /// "still covered" while covering nothing, so report them and those checks stop
-    /// counting toward coverage.
-    pub orphan_globs: Option<Vec<String>>,
+    /// One result per test key.
+    pub results: Vec<RunResultArg>,
+    /// Retry-safe key: resending the same report with the same key records it
+    /// once.
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ChecklistProjectArgs {
-    /// Project id.
+pub struct RunsArgs {
+    /// Project whose runs to list, newest first.
     pub project: String,
+    /// 1..=200 (default 50).
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1021,124 +1083,6 @@ pub struct EnvironmentFileArgs {
     pub notes: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ChecksArgs {
-    /// Project id.
-    pub project: String,
-    /// Narrow to one epic's checks, or "none" for checks nobody grouped.
-    pub epic: Option<String>,
-    /// Narrow to one initiative's checks, or "none" for checks no initiative
-    /// claims — the gap between what was agreed and what got written down.
-    pub initiative: Option<String>,
-    /// Narrow by severity: blocking, advisory, low.
-    pub severity: Option<String>,
-    /// Narrow by layer: ui, api, other.
-    pub layer: Option<String>,
-    /// How many to return, 1..=200 (default 200). `total` always reports how
-    /// many matched.
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CheckShowArgs {
-    /// Check id.
-    pub id: String,
-    /// Include the check's cases in the response.
-    pub cases: Option<bool>,
-    /// With `cases`: how many to return, 1..=500 (default 500). `case_total`
-    /// always reports how many the check holds.
-    pub limit: Option<i64>,
-    /// With `cases`: skip this many, for reading past the first page.
-    pub offset: Option<i64>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CheckFileArgs {
-    /// Project the check belongs to.
-    pub project: String,
-    /// The one action this check verifies, e.g. "Create a claim".
-    pub title: String,
-    /// Epic ticket id to group under. Omit to leave it ungrouped.
-    pub epic: Option<String>,
-    /// The initiative whose conversation agreed this check should exist. This is
-    /// how a characterisation test you settled on while discussing a feature
-    /// stays attached to that discussion — file it even before an epic exists.
-    pub initiative: Option<String>,
-    /// Environments this check must be verified in, by slug or id. Each case is
-    /// then tracked per environment, so "passes on staging, never run on
-    /// production" is expressible instead of collapsing into one verdict. Omit
-    /// for a check whose result does not depend on where it runs.
-    pub environments: Option<Vec<String>>,
-    /// Free-form traversal an agent or a human follows. No step model, no DAG —
-    /// prose is the content.
-    pub body: Option<String>,
-    /// The data state and permissions needed before this check can start.
-    pub precondition: Option<String>,
-    /// Which layer this check exercises: ui, api, other. A rule enforced only in
-    /// the interface passes at the API layer, so the two are NOT interchangeable —
-    /// one check covers one layer.
-    pub layer: Option<String>,
-    /// blocking, advisory or low. Only blocking severity blocks a release gate.
-    pub severity: Option<String>,
-    /// Override the inherited verification level: agent, human, agent_then_human.
-    pub verification: Option<String>,
-    /// Override the inherited time-based expiry, in days.
-    pub expiry_days: Option<i64>,
-    /// Override the inherited release-count expiry.
-    pub expiry_releases: Option<i64>,
-    /// Rough agent cost for one case, in minutes.
-    pub cost_agent_minutes: Option<i64>,
-    /// Rough human cost for one case, in minutes.
-    pub cost_human_minutes: Option<i64>,
-    /// Paths of the application under test this check claims to exercise, e.g.
-    /// ["src/claims/**"].
-    pub globs: Option<Vec<String>>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CaseFileArgs {
-    /// Check id the cases belong to.
-    pub check: String,
-    /// The generated case set. Each entry needs a `key` derived from its parameter
-    /// assignment so regeneration matches existing cases and keeps their history.
-    pub cases: Vec<CaseArg>,
-    /// Retire live cases the set no longer contains (default true). False extends
-    /// the set instead of replacing it.
-    pub prune: Option<bool>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CaseArg {
-    /// Stable identity derived from the parameter assignment. Same assignment ⇒
-    /// same key ⇒ history survives regeneration.
-    pub key: String,
-    /// One line naming what makes this case different from its siblings.
-    pub label: Option<String>,
-    /// The parameter assignment: the setup a person or agent must reproduce.
-    pub assignment: Option<serde_json::Value>,
-    /// True for a hand-written happy path you seeded rather than generated.
-    pub seeded: Option<bool>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct VerdictArgs {
-    /// Which environment you observed this in, by slug or id. Required when the
-    /// check declares more than one — a bare verdict there does not say what you
-    /// saw, and it is refused rather than guessed at. Omit for a check that
-    /// declares one (that one is meant) or none.
-    pub environment: Option<String>,
-    /// Case id.
-    pub case: String,
-    /// pass, fail, blocked or unreachable. `unreachable` is NOT a failure — use it
-    /// when the declared layer gives no way to reach this configuration. That is a
-    /// finding worth reporting, and it is counted apart from covered and uncovered.
-    pub verdict: String,
-    /// What you observed. Required on a fail.
-    pub note: Option<String>,
-    /// Release id this verdict was taken against.
-    pub release: Option<String>,
-}
-
 // ---- tools ------------------------------------------------------------------
 
 #[tool_router]
@@ -1151,7 +1095,7 @@ impl TakomoMcp {
         let tool_router = Self::tool_router()
             + Self::initiative_router()
             + Self::schedule_router()
-            + Self::test_run_router()
+            + Self::spec_history_router()
             + Self::bug_router();
         let tools = Arc::new(slim_tools(tool_router.list_all()));
         Self {
@@ -1479,8 +1423,8 @@ impl TakomoMcp {
         state counts, not a separate bucket. `initiatives` is the same rollup per \
         INITIATIVE — the long-lived lane a feature is worked in, which never closes — over \
         every ticket tagged `initiative:<id>` and everything beneath it, with `epics` \
-        naming the versions filed under that check; `uninitiated` covers work no check owns. \
-        Check rollups MAY OVERLAP and must not be summed. Pass `epic` to report on ONE \
+        naming the versions filed under that lane; `uninitiated` covers work no lane owns. \
+        Lane rollups MAY OVERLAP and must not be summed. Pass `epic` to report on ONE \
         epic's subtree; the project-wide `unparented`, `initiatives` and `uninitiated` \
         sections are then omitted rather than returned empty."
     )]
@@ -1661,9 +1605,9 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "List the environments a check can be run against: base URL, how to bring \
+        description = "List the environments the software runs in: base URL, how to bring \
         each one up and give it back, what data is in it, and whether writing to it is safe. Read \
-        this BEFORE running a check — it is where the URL and the credential pointer live, so you \
+        this BEFORE verifying a behavior — it is where the URL and the credential pointer live, so you \
         do not have to be told them out of band. `writable` and `credentials_hint` are advisory: \
         Takomo runs nothing and stores no secrets, only a pointer to where one lives."
     )]
@@ -1692,136 +1636,231 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "Record a release you just merged, and learn what it invalidated. Send the \
-        tag or FULL sha as `ref`, the paths the diff touched, and any check globs that matched NO \
-        file in the tree. Every check claiming a touched path has its cases marked stale; globs that \
-        matched nothing are flagged so those checks stop counting as covered. There is no direct \
-        integration by design — the agent that merged the work is what tells Takomo a release \
-        happened."
+        description = "Where verification stands for a project: behaviors counted as verified, \
+        failing, stale (no pass within fresh_days) or untested — overall and per plan section — plus \
+        the reported tests no behavior links. Start here before deciding what to verify or link."
     )]
-    async fn takomo_release_push(
+    async fn takomo_verification(
         &self,
-        Parameters(a): Parameters<ReleasePushArgs>,
+        Parameters(a): Parameters<VerificationArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_release_push(&require_auth(&ctx)?, a))
-    }
-
-    #[tool(description = "List a project's releases, newest first, with their sequence numbers.")]
-    async fn takomo_releases(
-        &self,
-        Parameters(a): Parameters<ChecklistProjectArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        respond(self.do_releases(&require_auth(&ctx)?, &a.project))
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            auth.require_project(&a.project)?;
+            let mut out = self.state.store.verification_summary(&a.project)?;
+            out["ok"] = json!(true);
+            Ok(out)
+        })())
     }
 
     #[tool(
-        description = "List a project's checklist checks with their case counts, resolved policy \
-        and any orphaned globs. A check is one action with one entry precondition at one layer."
+        description = "List a project's behaviors — what the software must do — with their linked \
+        test keys and computed status. A behavior is failing if any linked test's latest result \
+        failed, verified if one passed within fresh_days, stale if its passes are older, untested \
+        if nothing linked has reported. Narrow by section, status or text."
     )]
-    async fn takomo_checks(
+    async fn takomo_behaviors(
         &self,
-        Parameters(a): Parameters<ChecksArgs>,
+        Parameters(a): Parameters<BehaviorsArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_checks(&require_auth(&ctx)?, a))
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            auth.require_project(&a.project)?;
+            let filter = crate::store::BehaviorFilter {
+                project: a.project.clone(),
+                section: a
+                    .section
+                    .map(|s| if s == "none" { String::new() } else { s }),
+                status: a.status,
+                q: a.q,
+                limit: a.limit,
+                offset: a.offset,
+            };
+            let limit = a
+                .limit
+                .unwrap_or(crate::store::MAX_BEHAVIORS_PAGE)
+                .clamp(1, crate::store::MAX_BEHAVIORS_PAGE);
+            let (items, total) = self.state.store.list_behaviors(&filter)?;
+            let mut out = crate::api::paged(
+                items.iter().map(|b| b.to_json()).collect(),
+                total,
+                limit,
+                "Page with offset, or narrow with section/status/q.",
+            );
+            out["ok"] = json!(true);
+            Ok(out)
+        })())
     }
 
     #[tool(
-        description = "Show one check: its traversal body, precondition, claimed globs, resolved \
-        policy and case counts. Pass cases=true to include every case with its verdicts."
+        description = "Show one behavior: its statement, each linked test with its latest result \
+        (outcome, detail, commit, when, who), and the most recent results across them."
     )]
-    async fn takomo_check(
+    async fn takomo_behavior(
         &self,
-        Parameters(a): Parameters<CheckShowArgs>,
+        Parameters(a): Parameters<BehaviorShowArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_check(&require_auth(&ctx)?, a))
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            let b = self.state.store.get_behavior(&a.id)?;
+            auth.require_project(&b.project)?;
+            let mut out = self.state.store.behavior_detail(&a.id)?;
+            out["ok"] = json!(true);
+            Ok(out)
+        })())
     }
 
     #[tool(
-        description = "Declare a checklist check. Draw its boundary at a state transition, not a \
-        screen: if something needs a persisted record, has its own permission gate, or is only \
-        reachable from another check's terminal state, it is a SEPARATE check. Takomo stores what you \
-        file and does not judge whether the model is right."
+        description = "Describe a behavior the software must have, in words a person can check, \
+        and optionally tie it to the plan section it comes from and the test keys that verify it. \
+        Do not invent requirements: a behavior restates what the specification (or an observed \
+        regression) already asks for; if the success condition is unclear, ask instead. To verify \
+        it yourself without an automated test, link a key such as \"agent:<slug>\" and report \
+        results against it with takomo_run_report."
     )]
-    async fn takomo_check_file(
+    async fn takomo_behavior_create(
         &self,
-        Parameters(a): Parameters<CheckFileArgs>,
+        Parameters(a): Parameters<BehaviorCreateArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_check_file(&require_auth(&ctx)?, a))
+        let auth = require_auth(&ctx)?;
+        let result = async {
+            auth.require_scope("write")?;
+            auth.require_project(&a.project)?;
+            let section = a
+                .section
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if let Some(section) = &section {
+                self.state
+                    .store
+                    .precheck_behavior_write(&a.project, Some(&a.title))?;
+                crate::api::behaviors::validate_section(&self.state, &a.project, section).await?;
+            }
+            let req = crate::store::BehaviorCreate {
+                project: a.project,
+                title: a.title,
+                statement: a.statement.unwrap_or_default(),
+                section,
+                tests: a.tests.unwrap_or_default(),
+            };
+            let b = self.state.store.create_behavior(&req, &auth.actor)?;
+            self.state.wake();
+            let mut out = b.to_json();
+            out["ok"] = json!(true);
+            Ok(out)
+        }
+        .await;
+        respond(result)
     }
 
     #[tool(
-        description = "File the generated case set for a check. Upsert is by `key`, so derive each \
-        key from its parameter assignment: a case still present keeps its verdict history, one that \
-        vanished is retired rather than deleted, one that returns is revived. A large real form \
-        yields around 76 pairwise cases — if you have thousands, most of your parameters are \
-        probably inert fields that do not belong in the model."
+        description = "Change a behavior's title, statement or section, or replace its linked test \
+        keys (send the full list you want). Use it to link a test you just wrote, or to move a \
+        behavior to the section it belongs to."
     )]
-    async fn takomo_cases_file(
+    async fn takomo_behavior_update(
         &self,
-        Parameters(a): Parameters<CaseFileArgs>,
+        Parameters(a): Parameters<BehaviorUpdateArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_cases_file(&require_auth(&ctx)?, a))
+        let auth = require_auth(&ctx)?;
+        let result = async {
+            auth.require_scope("write")?;
+            let existing = self.state.store.get_behavior(&a.id)?;
+            auth.require_project(&existing.project)?;
+            // "" (or blanks) unlinks, as `null` does over REST.
+            let section = a.section.map(|s| {
+                let s = s.trim().to_string();
+                (!s.is_empty()).then_some(s)
+            });
+            if let Some(Some(section)) = &section {
+                self.state
+                    .store
+                    .precheck_behavior_write(&existing.project, None)?;
+                crate::api::behaviors::validate_section(&self.state, &existing.project, section)
+                    .await?;
+            }
+            let patch = crate::store::BehaviorPatch {
+                title: a.title,
+                statement: a.statement,
+                section,
+                tests: a.tests,
+            };
+            let b = self
+                .state
+                .store
+                .patch_behavior(&a.id, &patch, &auth.actor)?;
+            self.state.wake();
+            let mut out = b.to_json();
+            out["ok"] = json!(true);
+            Ok(out)
+        }
+        .await;
+        respond(result)
     }
 
     #[tool(
-        description = "Legacy verdict API; prefer takomo_test_run_create and takomo_test_result for revision-pinned evidence. Record your verdict on a case: pass, fail, blocked or unreachable. A fail \
-        needs a note. This records the AGENT verdict; only a human-scoped token can assert that a \
-        person approved a case, so a policy of agent_then_human needs both facts and you cannot \
-        supply the second one."
+        description = "Report test results: one run against one commit, one pass/fail per test \
+        key. Behaviors linking those keys update their status. If you chose which tests to run, \
+        say why in `note`. The reply lists keys no behavior links yet — link them with \
+        takomo_behavior_update, or create the behavior they verify."
     )]
-    async fn takomo_verdict(
+    async fn takomo_run_report(
         &self,
-        Parameters(a): Parameters<VerdictArgs>,
+        Parameters(a): Parameters<RunReportArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_verdict(&require_auth(&ctx)?, a))
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("write")?;
+            auth.require_project(&a.project)?;
+            let req = crate::store::RunReport {
+                project: a.project,
+                commit: a.commit,
+                note: a.note,
+                results: a
+                    .results
+                    .into_iter()
+                    .map(|r| crate::store::ResultInput {
+                        test: r.test,
+                        outcome: r.outcome,
+                        detail: r.detail,
+                    })
+                    .collect(),
+                idempotency_key: a.idempotency_key,
+                user: auth.user.clone(),
+            };
+            let (mut out, replayed) = self.state.store.report_run(&req, &auth.actor)?;
+            self.state.wake();
+            out["replayed"] = json!(replayed);
+            out["ok"] = json!(true);
+            Ok(out)
+        })())
     }
 
-    #[tool(
-        description = "What must be re-verified in this project, split into what you can clear and \
-        what needs a human. Human time is the scarce resource, so the split is the point. Reasons \
-        are stale (the release diff touched the claimed code), expired (a policy clock ran out), \
-        never, failed or awaiting_human."
-    )]
-    async fn takomo_worklist(
+    #[tool(description = "List a project's reported runs, newest first, with pass/fail counts.")]
+    async fn takomo_runs(
         &self,
-        Parameters(a): Parameters<ChecklistProjectArgs>,
+        Parameters(a): Parameters<RunsArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_worklist(&require_auth(&ctx)?, &a.project))
-    }
-
-    #[tool(
-        description = "Checklist coverage for a project, rolled up per epic. Counts unreachable \
-        apart from both covered and uncovered on purpose: calling it a gap reports work nobody can \
-        do, calling it covered claims verification of code no path reaches. This measures coverage \
-        of the DECLARED surface — hand-written globs — not measured execution."
-    )]
-    async fn takomo_coverage(
-        &self,
-        Parameters(a): Parameters<ChecklistProjectArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        respond(self.do_coverage(&require_auth(&ctx)?, &a.project))
-    }
-
-    #[tool(
-        description = "Is this project's verification good enough to ship? Only blocking-severity \
-        checks block; advisory and low ones nag, because a gate that fires on everything gets \
-        overridden out of habit and stops meaning anything."
-    )]
-    async fn takomo_gate(
-        &self,
-        Parameters(a): Parameters<ChecklistProjectArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        respond(self.do_gate(&require_auth(&ctx)?, &a.project))
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            auth.require_project(&a.project)?;
+            let limit = a.limit.unwrap_or(50).clamp(1, crate::store::MAX_RUNS_PAGE);
+            let (items, total) = self.state.store.list_runs(&a.project, a.limit, a.offset)?;
+            let mut out = crate::api::paged(items, total, limit, "Page with offset.");
+            out["ok"] = json!(true);
+            Ok(out)
+        })())
     }
 
     #[tool(
@@ -3127,12 +3166,6 @@ impl TakomoMcp {
                 json!(entries.iter().map(|e| e.to_json()).collect::<Vec<_>>()),
             );
             m.insert("next_cursor".to_string(), json!(next_cursor));
-            if a.verification.unwrap_or(false) {
-                m.insert(
-                    "verification".to_string(),
-                    self.state.store.initiative_verification(&a.id)?,
-                );
-            }
         }
         Ok(json!({ "ok": true, "initiative": out }))
     }
@@ -4099,215 +4132,6 @@ impl TakomoMcp {
         }
     }
 
-    // ---- checklist ---------------------------------------------------------
-
-    fn do_release_push(&self, auth: &AuthCtx, a: ReleasePushArgs) -> ApiResult<Value> {
-        auth.require_scope("write")?;
-        auth.require_project(&a.project)?;
-        let req = crate::store::ReleasePush {
-            project: a.project.clone(),
-            reference: a.r#ref,
-            note: a.note,
-            touched_paths: a.touched_paths.unwrap_or_default(),
-            orphan_globs: a.orphan_globs.unwrap_or_default(),
-        };
-        let (release, impact) = self.state.store.push_release(&req, &auth.actor)?;
-        self.state.wake();
-        let mut out = release.to_json();
-        out["impact"] = impact.to_json();
-        out["ok"] = json!(true);
-        Ok(out)
-    }
-
-    fn do_releases(&self, auth: &AuthCtx, project: &str) -> ApiResult<Value> {
-        auth.require_scope("read")?;
-        auth.require_project(project)?;
-        let items = self.state.store.list_releases(project, 50)?;
-        Ok(json!({
-            "ok": true,
-            "releases": items.iter().map(|r| r.to_json()).collect::<Vec<_>>(),
-        }))
-    }
-
-    fn do_checks(&self, auth: &AuthCtx, a: ChecksArgs) -> ApiResult<Value> {
-        auth.require_scope("read")?;
-        auth.require_project(&a.project)?;
-        let epic = match a.epic.as_deref() {
-            Some("none") => Some(String::new()),
-            other => other.map(str::to_string),
-        };
-        let initiative = match a.initiative.as_deref() {
-            Some("none") => Some(String::new()),
-            other => other.map(str::to_string),
-        };
-        let filter = crate::store::CheckFilter {
-            node: None,
-            project: a.project.clone(),
-            epic,
-            initiative,
-            severity: a.severity,
-            layer: a.layer,
-            include_archived: false,
-            with_policy: true,
-            limit: a.limit,
-        };
-        let limit = a
-            .limit
-            .unwrap_or(crate::store::MAX_CHECKS_PAGE)
-            .clamp(1, crate::store::MAX_CHECKS_PAGE);
-        let (checks, total) = self.state.store.list_checks(&filter)?;
-        let mut out = json!({
-            "ok": true,
-            "checks": checks.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
-            "total": total,
-            "limit": limit,
-        });
-        if total > checks.len() as i64 {
-            out["note"] = json!(format!(
-                "Showing {} of {total} check(s). Raise `limit` (max 200) or narrow with epic/severity/layer.",
-                checks.len()
-            ));
-        }
-        Ok(out)
-    }
-
-    fn do_check(&self, auth: &AuthCtx, a: CheckShowArgs) -> ApiResult<Value> {
-        auth.require_scope("read")?;
-        let check = self.state.store.get_check(&a.id)?;
-        auth.require_project(&check.project)?;
-        let mut out = check.to_json();
-        out["ok"] = json!(true);
-        if a.cases.unwrap_or(false) {
-            let (cases, total) = self
-                .state
-                .store
-                .list_cases(&a.id, false, a.limit, a.offset)?;
-            let shown = cases.len() as i64;
-            out["case_list"] = json!(cases.iter().map(|c| c.to_json()).collect::<Vec<_>>());
-            out["case_total"] = json!(total);
-            if total > shown {
-                let next = a.offset.unwrap_or(0).max(0) + shown;
-                out["case_note"] = json!(format!(
-                    "Showing {shown} of {total} case(s). Read the next page with offset={next}, and repeat while offset is below case_total. Cases are ordered by key, which is stable."
-                ));
-            }
-        }
-        Ok(out)
-    }
-
-    fn do_check_file(&self, auth: &AuthCtx, a: CheckFileArgs) -> ApiResult<Value> {
-        auth.require_scope("write")?;
-        auth.require_project(&a.project)?;
-        let req = crate::store::CheckCreate {
-            node: None,
-            project: a.project.clone(),
-            epic: a.epic,
-            initiative: a.initiative,
-            environments: a.environments.unwrap_or_default(),
-            title: a.title,
-            body: a.body.unwrap_or_default(),
-            precondition: a.precondition.unwrap_or_default(),
-            layer: a.layer,
-            severity: a.severity,
-            verification: a.verification,
-            expiry_days: a.expiry_days,
-            expiry_releases: a.expiry_releases,
-            cost_agent_minutes: a.cost_agent_minutes,
-            cost_human_minutes: a.cost_human_minutes,
-            globs: a.globs.unwrap_or_default(),
-            metadata: None,
-        };
-        let check = self.state.store.create_check(&req, &auth.actor)?;
-        self.state.wake();
-        let mut out = check.to_json();
-        out["ok"] = json!(true);
-        Ok(out)
-    }
-
-    fn do_cases_file(&self, auth: &AuthCtx, a: CaseFileArgs) -> ApiResult<Value> {
-        auth.require_scope("write")?;
-        let check = self.state.store.get_check(&a.check)?;
-        auth.require_project(&check.project)?;
-        let cases: Vec<crate::store::CaseInput> = a
-            .cases
-            .into_iter()
-            .map(|c| crate::store::CaseInput {
-                key: c.key,
-                label: c.label.unwrap_or_default(),
-                assignment: c.assignment.unwrap_or(Value::Null),
-                seeded: c.seeded.unwrap_or(false),
-            })
-            .collect();
-        let outcome =
-            self.state
-                .store
-                .file_cases(&a.check, &cases, a.prune.unwrap_or(true), &auth.actor)?;
-        self.state.wake();
-        let mut out = outcome.to_json();
-        out["ok"] = json!(true);
-        out["check"] = json!(a.check);
-        Ok(out)
-    }
-
-    fn do_verdict(&self, auth: &AuthCtx, a: VerdictArgs) -> ApiResult<Value> {
-        auth.require_scope("write")?;
-        let (case, _, _) = self.state.store.get_case(&a.case)?;
-        let check = self.state.store.get_check(&case.check)?;
-        auth.require_project(&check.project)?;
-        // Deliberately no actor_kind parameter: over MCP an agent records an agent
-        // verdict. "A person approved this" is a claim only a human-scoped token
-        // may make, and it is made through /v1/cases/{id}/verdict.
-        let out = self
-            .state
-            .store
-            .record_verdict(&crate::store::VerdictInput {
-                case: &a.case,
-                // Over MCP a verdict is ALWAYS the agent's. There is no
-                // `actor_kind` here on purpose: asserting that a person approved
-                // something is the one claim an agent must not be able to make
-                // on their behalf, and it goes through POST /v1/cases/{id}/verdict
-                // with a `human`-scoped token.
-                actor_kind: "agent",
-                actor: &auth.actor,
-                // Kept even though this is always an agent verdict: an agent token
-                // can belong to somebody's own automation, and the history row is
-                // where "whose agent" belongs.
-                user: auth.user.as_deref(),
-                verdict: &a.verdict,
-                note: a.note.as_deref(),
-                release: a.release.as_deref(),
-                environment: a.environment.as_deref(),
-            })?;
-        self.state.wake();
-        let mut body = out.to_json();
-        body["ok"] = json!(true);
-        Ok(body)
-    }
-
-    fn do_worklist(&self, auth: &AuthCtx, project: &str) -> ApiResult<Value> {
-        auth.require_scope("read")?;
-        auth.require_project(project)?;
-        let mut out = self.state.store.checklist_worklist(project)?;
-        out["ok"] = json!(true);
-        Ok(out)
-    }
-
-    fn do_coverage(&self, auth: &AuthCtx, project: &str) -> ApiResult<Value> {
-        auth.require_scope("read")?;
-        auth.require_project(project)?;
-        let mut out = self.state.store.checklist_coverage(project)?;
-        out["ok"] = json!(true);
-        Ok(out)
-    }
-
-    fn do_gate(&self, auth: &AuthCtx, project: &str) -> ApiResult<Value> {
-        auth.require_scope("read")?;
-        auth.require_project(project)?;
-        let mut out = self.state.store.checklist_gate(project)?;
-        out["ok"] = json!(true);
-        Ok(out)
-    }
-
     fn do_projects(&self, auth: &AuthCtx) -> ApiResult<Value> {
         auth.require_scope("read")?;
         let projects = self.state.store.list_projects()?;
@@ -4658,42 +4482,6 @@ fn plan_markdown(doc: &yrs::Doc, map_id: &str, node: Option<&str>) -> ApiResult<
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct TestDefinitionsArgs {
-    project: String,
-    offset: Option<i64>,
-    limit: Option<i64>,
-}
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct TestRunsArgs {
-    project: String,
-    cursor: Option<String>,
-    limit: Option<i64>,
-}
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct TestRunIdArgs {
-    id: String,
-}
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct TestRunCreateArgs {
-    project: String,
-    request: crate::store::testruns::RunCreate,
-}
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct TestRunTransitionArgs {
-    id: String,
-    action: String,
-}
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct TestRunResultArgs {
-    id: String,
-    request: crate::store::testruns::ResultCreate,
-}
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-struct TestRunRetryArgs {
-    id: String,
-    idempotency_key: String,
-}
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SpecHistoryArgs {
     mindmap: String,
     before: Option<i64>,
@@ -4711,7 +4499,7 @@ struct SpecCheckpointArgs {
     expected_version: i64,
     name: String,
 }
-#[tool_router(router = test_run_router)]
+#[tool_router(router = spec_history_router)]
 impl TakomoMcp {
     #[tool(
         description = "List saved specification versions, newest first. Follow next_cursor as before. History starts at the available baseline; recorded_by is the flusher, not every author. Document and Map share these versions."
@@ -4793,147 +4581,6 @@ impl TakomoMcp {
             .await
             .unwrap_or_else(|e| Err(ApiError::internal(e.to_string()))),
         )
-    }
-
-    #[tool(
-        description = "Read editable test definitions with current revision fingerprints and revision-aware execution summaries. Page using next_offset. Await your CRDT durability acknowledgment before selecting revisions. Legacy verdicts do not prove the current revision."
-    )]
-    async fn takomo_test_definitions(
-        &self,
-        Parameters(a): Parameters<TestDefinitionsArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let auth = require_auth(&ctx)?;
-        respond((|| {
-            auth.require_scope("read")?;
-            auth.require_project(&a.project)?;
-            self.state.store.list_test_definitions(
-                &a.project,
-                a.offset.unwrap_or(0),
-                a.limit.unwrap_or(50),
-            )
-        })())
-    }
-    #[tool(
-        description = "List execution attempts and legacy evidence, newest first. Follow next_cursor. Results belong to a run; definition edits never rewrite history."
-    )]
-    async fn takomo_test_runs(
-        &self,
-        Parameters(a): Parameters<TestRunsArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let auth = require_auth(&ctx)?;
-        respond((|| {
-            auth.require_scope("read")?;
-            auth.require_project(&a.project)?;
-            self.state
-                .store
-                .list_test_runs(&a.project, a.cursor.as_deref(), a.limit.unwrap_or(30))
-        })())
-    }
-    #[tool(
-        description = "Read one execution attempt, its pinned definition and specification snapshots, case parameters, outcomes and human reviews."
-    )]
-    async fn takomo_test_run(
-        &self,
-        Parameters(a): Parameters<TestRunIdArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let auth = require_auth(&ctx)?;
-        respond((|| {
-            auth.require_scope("read")?;
-            let run = self.state.store.get_test_run(&a.id)?;
-            auth.require_project(run["project"].as_str().unwrap())?;
-            Ok(run)
-        })())
-    }
-    #[tool(
-        description = "Create a queued run over selected revision fingerprints from takomo_test_definitions, an environment and an immutable code reference. A stale selection returns conflict.definition_changed; reread and reconsider. Reuse the same idempotency key when retrying a lost response. Takomo stores the run; you execute it."
-    )]
-    async fn takomo_test_run_create(
-        &self,
-        Parameters(a): Parameters<TestRunCreateArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let auth = require_auth(&ctx)?;
-        respond((|| {
-            auth.require_scope("write")?;
-            auth.require_project(&a.project)?;
-            let run = self
-                .state
-                .store
-                .create_test_run(&a.project, &a.request, &auth.actor)?;
-            self.state.wake();
-            Ok(run)
-        })())
-    }
-    #[tool(
-        description = "Start, complete or cancel a run. Start atomically claims execution for your actor. Only that executor can record agent results and complete; completion requires an outcome for every case. Human approval is separate."
-    )]
-    async fn takomo_test_run_transition(
-        &self,
-        Parameters(a): Parameters<TestRunTransitionArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let auth = require_auth(&ctx)?;
-        respond((|| {
-            auth.require_scope("write")?;
-            let run = self.state.store.get_test_run(&a.id)?;
-            auth.require_project(run["project"].as_str().unwrap())?;
-            let run = self
-                .state
-                .store
-                .transition_test_run(&a.id, &a.action, &auth.actor)?;
-            self.state.wake();
-            Ok(run)
-        })())
-    }
-    #[tool(
-        description = "Append an immutable result to a run case with evidence references. Agent results require the active executor; actor_kind human requires human scope. For agent_then_human, review requires a passing agent result in this same attempt. Non-pass outcomes need a note. Retry the run for a new observation."
-    )]
-    async fn takomo_test_result(
-        &self,
-        Parameters(a): Parameters<TestRunResultArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let auth = require_auth(&ctx)?;
-        respond((|| {
-            auth.require_scope("write")?;
-            let run = self.state.store.get_test_run(&a.id)?;
-            auth.require_project(run["project"].as_str().unwrap())?;
-            if a.request.actor_kind == "human" {
-                auth.require_scope("human")?;
-            }
-            let run = self.state.store.record_test_result(
-                &a.id,
-                &a.request,
-                &auth.actor,
-                auth.user.as_deref(),
-            )?;
-            self.state.wake();
-            Ok(run)
-        })())
-    }
-    #[tool(
-        description = "Retry a completed or cancelled execution with exactly its original revisions, environment and code reference. Creates a fresh queued attempt with no inherited outcomes or approvals. To test changed code or definitions, create a new run instead."
-    )]
-    async fn takomo_test_run_retry(
-        &self,
-        Parameters(a): Parameters<TestRunRetryArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        let auth = require_auth(&ctx)?;
-        respond((|| {
-            auth.require_scope("write")?;
-            let run = self.state.store.get_test_run(&a.id)?;
-            auth.require_project(run["project"].as_str().unwrap())?;
-            let run = self
-                .state
-                .store
-                .retry_test_run(&a.id, &a.idempotency_key, &auth.actor)?;
-            self.state.wake();
-            Ok(run)
-        })())
     }
 }
 

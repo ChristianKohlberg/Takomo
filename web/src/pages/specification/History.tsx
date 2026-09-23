@@ -267,7 +267,7 @@ export default function History() {
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => change({ history: '1', panel: null, check: null })}
+        onClick={() => change({ history: '1', panel: null, behavior: null })}
       >
         <HistoryIcon className="size-4" />
         {w.title}

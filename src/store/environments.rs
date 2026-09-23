@@ -1,17 +1,12 @@
-//! Environments: the places a check can actually be run.
+//! Environments: the places the software runs — a URL, how to bring it up,
+//! what is in it, and whether writing to it is safe. An agent handed "verify
+//! this" reads the context here instead of being told it out of band.
 //!
-//! A verdict is a claim about a running system, and until this existed Takomo
-//! stored the claim without ever recording what it was made against. An agent
-//! handed "re-verify the six stale cases" had to be told the URL, the way to
-//! bring the thing up, and whether it was safe to write to it — all out of band,
-//! all going stale silently. This is that context, in the store, next to the
-//! verdicts it qualifies.
-//!
-//! **Takomo stores; the agent computes**, exactly as the rest of Checklist does.
-//! Nothing here is executed, polled, deployed or health-checked. `bring_up` and
-//! `teardown` are prose an agent reads and runs in its own harness, which is why
-//! they are free text: structuring them into a command spec would be a promise
-//! the store cannot keep, since the store never runs them.
+//! **Takomo stores; the agent computes.** Nothing here is executed, polled,
+//! deployed or health-checked. `bring_up` and `teardown` are prose an agent
+//! reads and runs in its own harness, which is why they are free text:
+//! structuring them into a command spec would be a promise the store cannot
+//! keep, since the store never runs them.
 //!
 //! Two rules are worth stating because they are the ones a future change is
 //! likely to erode.
@@ -24,13 +19,12 @@
 //! deliberately not: a heuristic that catches most pasted secrets is worse than
 //! none, because it teaches people it works.
 //!
-//! **`slug` is immutable.** Checks and tool calls address an environment by
+//! **`slug` is immutable.** Tool calls and scripts address an environment by
 //! slug, so renaming one would silently break every reference to it. A new name
 //! is a new environment, and the old one is archived.
 //!
-//! Archiving, not deletion, for the same reason a check is archived: a
-//! decommissioned box is still the evidence behind every verdict ever taken
-//! there, and deleting it would orphan that history.
+//! Archiving, not deletion: a decommissioned box is still named by history
+//! that refers to it, and deleting it would orphan that history.
 
 use super::helpers::{emit_event, ensure_project_writable};
 use super::model::{Environment, ENVIRONMENT_DATA_STATES, ENVIRONMENT_KINDS, MAX_METADATA};
@@ -75,8 +69,8 @@ pub struct EnvironmentCreate {
 }
 
 /// A partial update. The nullable fields use an override slot — absent leaves
-/// them alone, explicit null clears them — for the same reason a check's policy
-/// overrides do: once a value is set, "unset it again" has to be expressible.
+/// them alone, explicit null clears them — because once a value is set,
+/// "unset it again" has to be expressible.
 ///
 /// There is deliberately no `slug`.
 #[derive(Debug, Clone, Default)]
@@ -101,8 +95,8 @@ pub struct EnvironmentFilter {
     pub limit: Option<i64>,
 }
 
-// Written one function per field rather than generated, for the same reason the
-// checklist validators are: the error-code scan in `tests/api.rs` reads source
+// Written one function per field rather than generated, because the error-code
+// scan in `tests/api.rs` reads source
 // text, so a code reached through a shared helper or a macro body is invisible
 // to it — and a code the scan cannot see can drift out of the documented
 // vocabulary without anything failing.
@@ -394,7 +388,7 @@ impl Store {
                 )
                 .remedy(
                     "Update that one with PATCH /v1/environments/{id}, or pick another slug. \
-                     A slug is immutable because checks and tool calls address environments \
+                     A slug is immutable because tool calls and scripts address environments \
                      by it."
                         .to_string(),
                 ));
@@ -612,12 +606,7 @@ impl Store {
         })
     }
 
-    /// Archive an environment, and report the live checks still pointing at it.
-    ///
-    /// The count comes back in the response for the same reason a release push
-    /// reports its impact: the caller learns the consequence of what it just did
-    /// without having to know to ask. Nothing is detached — a check that names an
-    /// archived environment is a finding, not a corruption.
+    /// Archive an environment. Idempotent: archiving an archived one returns it.
     pub fn archive_environment(&self, id: &str, actor: &str) -> ApiResult<Environment> {
         let now = now_ms();
         let id = id.to_string();

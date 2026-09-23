@@ -261,7 +261,7 @@ pub async fn put_claim_ttl(
 /// POST /v1/projects/{project}/archive (admin) — freeze the project.
 ///
 /// Every write under it is then refused with a 409 `project.archived` — tickets,
-/// claims, transitions, comments, questions, tags, schedules, checklist, and the
+/// claims, transitions, comments, questions, tags, schedules, behaviors and runs, and the
 /// project's own settings — and its tickets leave the ready queue. Reads are
 /// untouched, so the board, the history and the export all still answer.
 ///

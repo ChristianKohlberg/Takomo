@@ -25,7 +25,7 @@ import {
   type Environment,
   type EnvironmentFields,
   type EnvironmentKind,
-} from '@/lib/verification'
+} from '@/lib/environments'
 
 export interface EnvironmentDialogLabels {
   newEnvironment: string

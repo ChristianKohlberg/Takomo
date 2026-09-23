@@ -310,8 +310,8 @@ composes its URL as `serverUrl + "/" + room`, so the room must survive as ONE pa
 `kind:id` room comes back mangled (`/v1/documents/{id}/sync` did exactly that and was reverted).
 Neither table carries a foreign key to its owner, because the owner is one of two tables; the
 cascade is `Store::purge_collab`, called from each kind's delete path. Widening those two tables was
-a **pre-schema** migration (`widen_doc_log_to_collab_objects`) for the reason
-`rename_lanes_to_checks` is: run it after the `CREATE TABLE IF NOT EXISTS` batch and an empty
+a **pre-schema** migration (`widen_doc_log_to_collab_objects`): run it after the
+`CREATE TABLE IF NOT EXISTS` batch and an empty
 `crdt_updates` already stands beside the populated `doc_updates`, the copy declines, and every
 document comes back blank — a failure that looks exactly like success.
 
@@ -527,46 +527,27 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
 - The server refuses non-loopback binds unless `TAKOMO_ALLOW_PUBLIC_BIND=1`: it terminates plain
   HTTP and expects TLS in front.
 
-**Checklist** (`src/store/checklist.rs`, `src/api/checklist.rs`) is how a "done" claim becomes a
-*verified* one: releases, checks, the cases generated beneath them, and the verdicts recorded
-against those cases. The rule that shapes every part of it is **Takomo stores, the agent
-computes** — nothing server-side generates a combinatorial model, validates one, or judges
-whether a coverage claim is true. A check is ONE action with ONE entry precondition at ONE layer
-(a rule enforced only in a frontend passes at the API layer, so those verdicts are not
-interchangeable), and coverage is of the *declared* surface: hand-written globs, known to rot,
-with orphan detection so the rot stays visible. See `docs/checklist.md`.
+**Verification** (`src/store/behaviors.rs`, `src/api/behaviors.rs`) keeps what the software must
+do as **behaviors**, links each to the external test keys that show it, and records **runs** that
+CI or an agent report: pass/fail per key against a commit. A behavior's status — failing, verified
+(a pass within 14 days), stale, untested — is computed on read from the latest result of each linked
+key and never stored. **Takomo stores; the reporter computes**: it never runs tests or judges
+whether a test really covers a behavior. The earlier checklist/test-run model was dropped before
+production; `drop_checklist` in `src/store/mod.rs` removes its tables before the schema batch. See
+`docs/verification.md`.
 
-**A check used to be called a lane, and `lane` still means something else.** On the roadmap and
-in `/initiatives` a lane is the *initiative* a feature is worked in — it spans versions and never
-closes. One product cannot carry two lanes, so the verification one is a **check**: tables
-`checks` / `check_globs`, `cases.check_id` (the column is `check_id` because `CHECK` is a SQL
-keyword), routes under `/v1/checks`, and MCP `takomo_check*`. Existing rows keep their `lane-…`
-ids — an id is opaque, and rewriting primary keys is the one part of a rename that can lose data.
-`rename_lanes_to_checks` in `src/store/mod.rs` migrates an older database, and runs **before** the
-schema batch: `CREATE TABLE IF NOT EXISTS checks` would otherwise create an empty table beside the
-populated one.
-
-**A check may declare which environments it must pass in**, and then each of its cases is tracked
-per `(case, environment)` — so "verified on staging, never run on production" is expressible and the
-case's own state is the WORST of its environments. Declaring none is a legitimate steady state, not
-a gap: that check keeps the original environment-agnostic reading, stored in the verdict columns on
-`cases` rather than in `case_environments`. The two are mutually exclusive by construction, which is
-what stops them disagreeing. An omitted environment resolves when the check declares exactly one and
-is refused with `conflict.environment_ambiguous` when it declares more — filing a staging run as
-production is worse than no record.
-
-**Environments** (`src/store/environments.rs`) are where a check can be run: a base URL, prose for
+**Environments** (`src/store/environments.rs`) are where the software runs: a base URL, prose for
 bringing the thing up and giving it back, what data is in it, and whether writing to it is safe.
-It exists because a verdict with no environment behind it is a claim nobody can reproduce, and all
+It exists because a result with no environment behind it is a claim nobody can reproduce, and all
 of that used to travel out of band. Takomo runs none of it — `bring_up`/`teardown` are prose handed
 to whoever needs them next, `writable` is advisory, and `credentials_hint` is a POINTER to where a
 credential lives and **never** a credential, because every `read` token can see it. A slug is
-immutable (checks and tool calls address environments by it) and archiving is reversible. Writes
+immutable (tool calls and scripts address environments by it) and archiving is reversible. Writes
 take `write`, not `human`: an agent registering the ephemeral instance it just leased is the caller
 this serves. See `docs/environments.md`.
 
 Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workflow-format.md`,
-`spec/auth.md`, `docs/ask-a-human.md`, `docs/users.md`, `docs/checklist.md`,
+`spec/auth.md`, `docs/ask-a-human.md`, `docs/users.md`, `docs/verification.md`,
 `docs/environments.md`, `docs/documents.md`, `docs/epic-claims.md`
 (claiming an epic reserves its subtree; no-TTL claims judged by movement),
 `docs/initiatives.md`, `docs/mindmaps.md`, `docs/promotions.md`, `docs/document-search.md`,

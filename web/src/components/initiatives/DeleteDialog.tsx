@@ -7,16 +7,9 @@
 // how much of it is documents, because an initiative fed for three months and
 // one opened by mistake yesterday look identical in a tree row.
 //
-// Two refusals it has to render rather than swallow:
-//
-//   - A verification check filed under it. The server refuses the first attempt
-//     with `conflict.initiative_has_checks`, and this turns that into a SECOND,
-//     explicit confirmation — the reader is told what forcing does (the checks
-//     survive, detached) and has to choose it. Retrying with `force` on their
-//     behalf would make one click mean two different things.
-//   - Tickets tagged into the lane. Those are never blocked on, but they are
-//     worth naming up front: the lane is about to vanish from the map, and the
-//     work under it does not.
+// Tickets tagged into the lane are never blocked on, but they are worth naming
+// up front: the lane is about to vanish from the map, and the work under it
+// does not.
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
@@ -41,12 +34,7 @@ export interface DeleteDialogLabels {
   /** Shown when tickets carry its `initiative:` tag; receives the count. */
   taggedWork: (n: number) => string
   irreversible: string
-  /** The check refusal, shown after the server names them; receives the count. */
-  checksTitle: string
-  checksBody: (n: number) => string
-  checksForce: string
   confirm: string
-  confirmForce: string
   cancel: string
 }
 
@@ -55,11 +43,10 @@ export interface DeleteDialogProps {
   initiative: Initiative | null
   onOpenChange: (open: boolean) => void
   /**
-   * Perform the delete. Resolves to the ids of the checks that blocked it, or
-   * null on success — the caller owns the request so the page can refresh its
+   * Perform the delete. The caller owns the request so the page can refresh its
    * list and toast in one place.
    */
-  onDelete: (id: string, force: boolean) => Promise<string[] | null>
+  onDelete: (id: string) => Promise<void>
   /** Tickets carrying its `initiative:` tag, when the page knows the number. */
   taggedTickets?: number
   busy?: boolean
@@ -74,13 +61,9 @@ export function DeleteDialog({
   busy = false,
   labels,
 }: DeleteDialogProps) {
-  // The checks the server refused on, once it has told us. Cleared whenever the
-  // dialog opens on a different document, so a refusal never carries over.
-  const [blockedBy, setBlockedBy] = useState<string[]>([])
   const [pending, setPending] = useState(false)
 
   useEffect(() => {
-    setBlockedBy([])
     setPending(false)
   }, [initiative?.id])
 
@@ -90,13 +73,11 @@ export function DeleteDialog({
   const entries = rollup?.entries ?? 0
   const attachments = rollup?.attachments ?? 0
   const { notes, amendments } = waiting(rollup)
-  const forced = blockedBy.length > 0
 
   const run = async () => {
     setPending(true)
     try {
-      const blocked = await onDelete(initiative.id, forced)
-      if (blocked && blocked.length > 0) setBlockedBy(blocked)
+      await onDelete(initiative.id)
     } finally {
       setPending(false)
     }
@@ -108,39 +89,24 @@ export function DeleteDialog({
     <Dialog open onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[calc(100vw-2rem)] sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{forced ? labels.checksTitle : labels.title}</DialogTitle>
-          <DialogDescription>
-            {forced ? labels.checksBody(blockedBy.length) : labels.body.replace('{title}', initiative.title)}
-          </DialogDescription>
+          <DialogTitle>{labels.title}</DialogTitle>
+          <DialogDescription>{labels.body.replace('{title}', initiative.title)}</DialogDescription>
         </DialogHeader>
 
-        {forced ? (
-          <>
-            <ul className="text-foreground m-0 max-h-40 list-none overflow-y-auto p-0 font-mono text-[12px]">
-              {blockedBy.map((id) => (
-                <li key={id} className="truncate py-0.5">
-                  {id}
-                </li>
-              ))}
-            </ul>
-            <p className="text-muted-foreground m-0 text-[12.5px]">{labels.checksForce}</p>
-          </>
-        ) : (
-          <div className="text-[13px]">
-            {entries > 0 && <p className="m-0">{labels.contents(entries, attachments)}</p>}
-            {/* An unanswered question or an undecided rewrite is somebody else
-                mid-conversation. Worth one line before it goes. */}
-            {notes + amendments > 0 && (
-              <p className="text-[color:var(--warn,#c99a3a)] mt-1.5 mb-0 font-semibold">
-                {labels.stillWaiting}
-              </p>
-            )}
-            {taggedTickets > 0 && (
-              <p className="text-muted-foreground mt-1.5 mb-0">{labels.taggedWork(taggedTickets)}</p>
-            )}
-            <p className="text-muted-foreground mt-1.5 mb-0">{labels.irreversible}</p>
-          </div>
-        )}
+        <div className="text-[13px]">
+          {entries > 0 && <p className="m-0">{labels.contents(entries, attachments)}</p>}
+          {/* An unanswered question or an undecided rewrite is somebody else
+              mid-conversation. Worth one line before it goes. */}
+          {notes + amendments > 0 && (
+            <p className="text-[color:var(--warn,#c99a3a)] mt-1.5 mb-0 font-semibold">
+              {labels.stillWaiting}
+            </p>
+          )}
+          {taggedTickets > 0 && (
+            <p className="text-muted-foreground mt-1.5 mb-0">{labels.taggedWork(taggedTickets)}</p>
+          )}
+          <p className="text-muted-foreground mt-1.5 mb-0">{labels.irreversible}</p>
+        </div>
 
         <DialogFooter>
           <Button variant="outline" disabled={working} onClick={() => onOpenChange(false)}>
@@ -153,7 +119,7 @@ export function DeleteDialog({
               void run()
             }}
           >
-            {forced ? labels.confirmForce : labels.confirm}
+            {labels.confirm}
           </Button>
         </DialogFooter>
       </DialogContent>

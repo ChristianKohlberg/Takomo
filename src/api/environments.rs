@@ -1,6 +1,6 @@
 //! Environments — `/v1/projects/{project}/environments` and `/v1/environments/{id}`.
 //!
-//! The registry of places a check can be run: a URL, how to bring the thing up,
+//! The registry of places the software runs: a URL, how to bring the thing up,
 //! what is in it, and whether writing to it is safe. Takomo runs none of it; see
 //! `store/environments.rs` for why that is the whole design.
 //!
@@ -37,7 +37,7 @@ const ENV_CREATE_FIELDS: [&str; 11] = [
     "metadata",
 ];
 
-// No `slug`: it is the handle checks and tool calls carry, so renaming one would
+// No `slug`: it is the handle tool calls and scripts carry, so renaming one would
 // silently break every reference. A new name is a new environment.
 const ENV_PATCH_FIELDS: [&str; 10] = [
     "name",
@@ -172,8 +172,8 @@ pub async fn patch(
 
 /// DELETE /v1/environments/{id} (write) — archive it.
 ///
-/// Archive rather than delete: a decommissioned box is still the evidence behind
-/// every verdict ever taken there, and deleting it would orphan that history.
+/// Archive rather than delete: history that names a decommissioned box should
+/// still resolve it.
 pub async fn archive(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,

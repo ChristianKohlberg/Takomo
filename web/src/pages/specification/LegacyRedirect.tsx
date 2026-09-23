@@ -68,6 +68,5 @@ export function LegacySpecificationRedirect() {
     ),
     window.location.origin,
   )
-  if (hash.get('c')) target.searchParams.set('check', hash.get('c')!)
   return <Navigate to={target.pathname + target.search} replace />
 }

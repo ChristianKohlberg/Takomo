@@ -609,7 +609,7 @@ restored first.
 specification summary and all sections, prose, node attachments, relationships,
 comments and agent proposals. **The document and mindmap share this content, so
 both views are cleared.** The map keeps its identity, title, status and metadata;
-existing revision and review history and linked tickets/checks remain. This reset
+existing revision and review history and linked tickets and behaviors remain. This reset
 cannot be reversed with Undo. Copy anything you need before confirming.
 
 The server requires `admin` and access to the project, merges the live replica

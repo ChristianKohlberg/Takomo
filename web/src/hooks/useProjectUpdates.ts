@@ -2,7 +2,7 @@ import { isAuthError } from '@/lib/session'
 import { api } from '@/lib/api'
 import { syncBase, type SyncSession } from '@/lib/collab-session'
 import { createContext, useContext, useEffect, useEffectEvent, useState } from 'react'
-export const PROJECT_TOPICS = ['document', 'trace', 'checks', 'projects', 'inbox', 'tickets', 'agent', 'history', 'search'] as const
+export const PROJECT_TOPICS = ['document', 'trace', 'behaviors', 'projects', 'inbox', 'tickets', 'agent', 'history', 'search'] as const
 export type ProjectTopic = typeof PROJECT_TOPICS[number]
 export interface ProjectUpdate { type: 'refresh'; topics?: ProjectTopic[] }
 export const affectsProjectTopic = (event: ProjectUpdate | undefined, ...topics: ProjectTopic[]) => !event?.topics || topics.some(topic => event.topics!.includes(topic))

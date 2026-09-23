@@ -15,7 +15,6 @@ import {
   SheetTitle,
   SheetDescription,
 } from '@/components/ui/sheet'
-import { CheckEditor } from '@/components/verification/CheckEditor'
 import { useToast } from '@/components/Toaster'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { useSyncConnection } from '@/hooks/useSyncConnection'
@@ -32,14 +31,12 @@ import {
   type MindmapSession,
 } from '@/lib/mindmaps'
 import { openSpecification } from '@/lib/open-specification'
-import { listChecks, type Check } from '@/lib/verification'
-import { listDefinitions, type TestDefinition } from '@/lib/test-runs'
+import { fetchVerification, type VerificationSummary } from '@/lib/behaviors'
 import { readPlanTree, nodesMap } from '@/lib/mindmap-crdt'
 import { sameTree, type PlanNode } from '@/lib/plan-sections'
 import { retryConnection } from '@/lib/retry-connection'
 import type { SaveState, ServerSync } from '@/lib/save-status'
 import { STR as DOCUMENT_STR } from '../documents/strings'
-import { STR as CHECK_STR } from '../verification/strings'
 import { SpecificationContext } from './context'
 import { SpecificationViews } from './Views'
 
@@ -107,7 +104,6 @@ function SpecificationWorkspace({
   const query = new URLSearchParams(location.search)
   const [section] = useWorkspaceSection()
   const panel = query.get('panel') === 'tests' && view !== 'tests'
-  const editing = query.get('check')
   const [token, setToken] = useState(loadToken)
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem('takomo.lang')))
   const [actor, setActor] = useState('')
@@ -121,8 +117,7 @@ function SpecificationWorkspace({
   const [failure, setFailure] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const [session, setSession] = useState<MindmapSession | null>(null)
-  const [checks, setChecks] = useState<Check[]>([])
-  const [testDefinitions, setTestDefinitions] = useState<TestDefinition[]>([])
+  const [verification, setVerification] = useState<VerificationSummary | null>(null)
   const [saveState, setSaveState] = useState<SaveState>('connecting')
   const [serverSync, setServerSync] = useState<ServerSync>('unknown')
   const [peers, setPeers] = useState<string[]>([])
@@ -131,7 +126,6 @@ function SpecificationWorkspace({
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const { toast } = useToast()
   const t = pick(DOCUMENT_STR, lang)
-  const c = pick(CHECK_STR, lang)
   const w = words[lang]
   const lastError = useRef({ message: '', at: 0 })
   const onError = useCallback(
@@ -148,12 +142,12 @@ function SpecificationWorkspace({
     },
     [toast],
   )
-  const epochs = useRef({ map: 0, checks: 0, projects: 0 })
+  const epochs = useRef({ map: 0, verification: 0, projects: 0 })
   useEffect(() => {
     const ref = epochs
     return () => {
       ref.current.map++
-      ref.current.checks++
+      ref.current.verification++
       ref.current.projects++
     }
   }, [])
@@ -177,13 +171,11 @@ function SpecificationWorkspace({
     }
     return result
   }, [project, token])
-  const refreshChecks = useCallback(async () => {
-    const epoch = ++epochs.current.checks
-    const [items, definitions] = project ? await Promise.all([
-      listChecks(token, project).then(page => page.items), listDefinitions(token, project),
-    ]) : [[], []]
-    if (epochs.current.checks === epoch) { setChecks(items); setTestDefinitions(definitions) }
-    return items
+  const refreshVerification = useCallback(async () => {
+    const epoch = ++epochs.current.verification
+    const summary = project ? await fetchVerification(token, project) : null
+    if (epochs.current.verification === epoch) setVerification(summary)
+    return summary
   }, [project, token])
   useEffect(() => {
     if (!token) return
@@ -199,7 +191,7 @@ function SpecificationWorkspace({
       setProjects(items)
       const current = items.find((item) => item.id === project)
       access.current = { canWrite: (who.scopes ?? []).includes('write') && current?.archived !== true, title: current?.name || project }
-      await Promise.all([refreshMap(), refreshChecks()])
+      await Promise.all([refreshMap(), refreshVerification()])
       if (cancelled) return
       setFailure(null)
       if (!project && items[0]) navigate(specificationLink(items[0].id), { replace: true })
@@ -215,7 +207,7 @@ function SpecificationWorkspace({
       cancelled = true
       abort.abort()
     }
-  }, [token, project, attempt, navigate, onError, refreshMap, refreshChecks])
+  }, [token, project, attempt, navigate, onError, refreshMap, refreshVerification])
   const retry = useCallback(() => {
     setFailure(null)
     setLoaded(false)
@@ -297,7 +289,7 @@ function SpecificationWorkspace({
   const liveConnected = useProjectUpdates(token, project, async event => {
     await Promise.allSettled([
       ...(affectsProjectTopic(event, 'document') ? [refreshMap()] : []),
-      ...(affectsProjectTopic(event, 'checks') ? [refreshChecks()] : []),
+      ...(affectsProjectTopic(event, 'behaviors') ? [refreshVerification()] : []),
       ...(affectsProjectTopic(event, 'projects') ? [refreshProjects()] : []),
     ])
     await Promise.allSettled([...listeners.current].map(callback => callback(event)))
@@ -315,23 +307,14 @@ function SpecificationWorkspace({
     [location.search, navigate],
   )
   const openTests = useCallback(
-    (id: string | null) => changeQuery({ section: id, panel: 'tests', check: null }),
+    (id: string | null) => changeQuery({ section: id, panel: 'tests', behavior: null }),
     [changeQuery],
   )
-  const editCheck = useCallback((id: string) => changeQuery({ check: id }), [changeQuery])
-  const counts = useMemo(() => {
-    const result = new Map<string, { total: number; failing: number }>()
-    for (const item of testDefinitions) {
-      const check = item.definition
-      if (!check.node) continue
-      const count = result.get(check.node) ?? { total: 0, failing: 0 }
-      count.total++
-      if (item.execution.state === 'failed') count.failing++
-      result.set(check.node, count)
-    }
-    return result
-  }, [testDefinitions])
-  const testsFor = useCallback((id: string) => counts.get(id) ?? { total: 0, failing: 0 }, [counts])
+  const openBehavior = useCallback((id: string | null) => changeQuery({ behavior: id }), [changeQuery])
+  const testsFor = useCallback((id: string) => {
+    const counts = verification?.sections[id]
+    return { total: counts?.total ?? 0, failing: counts?.failing ?? 0 }
+  }, [verification])
   const selected = nodes.find((node) => node.id === section)
   const context = useMemo(
     () => ({
@@ -350,14 +333,13 @@ function SpecificationWorkspace({
       connection,
       saveState,
       serverSync,
-      checks,
-      setChecks,
+      verification,
       refreshMap,
-      refreshChecks,
+      refreshVerification,
       selectProject,
       onError,
       openTests,
-      editCheck,
+      openBehavior,
       testsFor,
       nodes,
     }),
@@ -376,13 +358,13 @@ function SpecificationWorkspace({
       connection,
       saveState,
       serverSync,
-      checks,
+      verification,
       refreshMap,
-      refreshChecks,
+      refreshVerification,
       selectProject,
       onError,
       openTests,
-      editCheck,
+      openBehavior,
       testsFor,
       nodes,
     ],
@@ -532,16 +514,6 @@ function SpecificationWorkspace({
               )}
             </SheetContent>
           </Sheet>
-          {editing && checks.some((check) => check.id === editing) && (
-            <CheckEditor
-              lang={lang}
-              token={token}
-              id={editing}
-              labels={c}
-              onError={onError}
-              onClose={() => changeQuery({ check: null })}
-            />
-          )}
         </AppShell>
       </ProjectUpdatesContext>
     </SpecificationContext>

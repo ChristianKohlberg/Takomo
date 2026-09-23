@@ -248,7 +248,6 @@ export { cn } from '../lib/utils'
 // above. A new component belongs here the moment a second surface could use it.
 
 export { SharedText } from './SharedText'
-export { CheckEditor } from './verification/CheckEditor'
 
 export { SectionConversation } from './documents/SectionConversation'
 

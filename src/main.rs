@@ -320,7 +320,7 @@ enum ProjectCommand {
     },
     /// Archive a project: freeze it. Every write under it is then refused —
     /// tickets, claims, transitions, comments, questions, tags, schedules,
-    /// checklist and the project's own settings — and its tickets leave the
+    /// behaviors, runs and the project's own settings — and its tickets leave the
     /// ready queue. Reads keep working, nothing is deleted, and `unarchive`
     /// puts it back exactly as it stood.
     Archive {

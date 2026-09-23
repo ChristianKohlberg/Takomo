@@ -210,7 +210,8 @@ impl TestApp {
 
     async fn bundle(&self, include_lazy: bool) -> String {
         let mut seen = std::collections::BTreeSet::new();
-        let mut queue = vec!["app.js".to_string()];
+        let entry = spa_asset("app", ".js").trim_start_matches("/assets/");
+        let mut queue = vec![entry.to_string()];
         let mut out = String::new();
         while let Some(name) = queue.pop() {
             if !seen.insert(name.clone()) {
@@ -529,21 +530,31 @@ impl TestApp {
         assert_eq!(n, 1, "force_parent should touch exactly one row ({id})");
     }
 
-    /// Backdate a case's agent verdict so time-based expiry can be tested without
-    /// sleeping for a month. Writes straight to the file, the same trick
+    /// Backdate a verification run and its results so freshness can be tested
+    /// without waiting two weeks. Writes straight to the file, the same trick
     /// `force_parent` uses.
-    pub fn backdate_case_verdict(&self, case: &str, millis_ago: i64) {
+    pub fn backdate_run(&self, run: &str, millis_ago: i64) {
         let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .expect("busy timeout");
         let when = chrono::Utc::now().timestamp_millis() - millis_ago;
         let n = conn
             .execute(
-                "UPDATE cases SET agent_at = ?2 WHERE id = ?1",
-                rusqlite::params![case, when],
+                "UPDATE verification_runs SET at = ?2 WHERE id = ?1",
+                rusqlite::params![run, when],
             )
-            .expect("backdate case verdict");
-        assert_eq!(n, 1, "backdate should touch exactly one row ({case})");
+            .expect("backdate run");
+        assert_eq!(n, 1, "backdate should touch exactly one run ({run})");
+        conn.execute(
+            "UPDATE verification_results SET at = ?2 WHERE run = ?1",
+            rusqlite::params![run, when],
+        )
+        .expect("backdate results");
+        conn.execute(
+            "UPDATE verification_latest SET at = ?2 WHERE run = ?1",
+            rusqlite::params![run, when],
+        )
+        .expect("backdate latest results");
     }
 
     // --- schedules -----------------------------------------------------------

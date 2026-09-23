@@ -475,18 +475,11 @@ export function App() {
     [doPatch, t, handleErr],
   )
 
-  /**
-   * Delete a document, and tell the dialog whether the server refused.
-   *
-   * The refusal is returned rather than toasted: `conflict.initiative_has_checks`
-   * is not a failure the reader should read and dismiss, it is a second question
-   * — keep the checks, detached, or stop — and the dialog is where that gets
-   * asked. Every other error is a real error and goes to the toast.
-   */
+  /** Delete a document; a failure goes to the toast. */
   const doDelete = useCallback(
-    async (id: string, force: boolean): Promise<string[] | null> => {
+    async (id: string): Promise<void> => {
       try {
-        const gone = await deleteInitiative(token, id, force)
+        await deleteInitiative(token, id)
         setItems((prev) => prev.filter((i) => i.id !== id))
         setDeleting(null)
         // Only the document being READ needs clearing; deleting another one from
@@ -498,23 +491,11 @@ export function App() {
           clearReadingState()
           navigate({ hash: '' }, { replace: true })
         }
-        toast(
-          gone.detached_checks > 0
-            ? t.delDoneDetached.replace('{n}', String(gone.detached_checks))
-            : t.delDone,
-          'success',
-        )
+        toast(t.delDone, 'success')
         // The lane is gone from the roadmap, so the map has to be re-read.
         void refreshRoadmap(roadmapProject)
-        return null
       } catch (e) {
-        const err = e as { code?: string; details?: { checks?: unknown } }
-        if (err.code === 'conflict.initiative_has_checks') {
-          const checks = err.details?.checks
-          return Array.isArray(checks) ? checks.map(String) : []
-        }
         handleErr(e)
-        return null
       }
     },
     [token, toast, t, handleErr, clearReadingState, navigate, refreshRoadmap, roadmapProject],
@@ -1544,11 +1525,7 @@ export function App() {
           stillWaiting: t.delWaiting,
           taggedWork: (n) => t.delTagged.replace('{n}', String(n)),
           irreversible: t.delIrreversible,
-          checksTitle: t.delChecksTitle,
-          checksBody: (n) => t.delChecksBody.replace('{n}', String(n)),
-          checksForce: t.delChecksForce,
           confirm: t.delConfirm,
-          confirmForce: t.delConfirmForce,
           cancel: t.cancel,
         }}
       />

@@ -30,7 +30,7 @@ import {
   unarchiveEnvironment,
   type Environment,
   type EnvironmentFields,
-} from '@/lib/verification'
+} from '@/lib/environments'
 import { EnvironmentCard } from '@/components/environments/EnvironmentCard'
 import { EnvironmentDialog } from '@/components/environments/EnvironmentDialog'
 import { STR } from './strings'

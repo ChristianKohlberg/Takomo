@@ -207,21 +207,16 @@ pub async fn patch(
 /// DELETE /v1/initiatives/{id} (write) — delete an initiative and its entries.
 ///
 /// `write`, not `admin`, matching every other content delete in a project:
-/// mindmaps, environments and checks all take `write`, and `admin` is reserved
-/// for deleting the project itself.
+/// mindmaps, environments and behaviors all take `write`, and `admin` is
+/// reserved for deleting the project itself.
 ///
-/// `?force=true` detaches the verification checks filed under it instead of
-/// refusing — the same shape as `DELETE /v1/projects/{p}?force=true`, so the
-/// escape hatch is spelled the same way in both places.
-///
-/// Answers with what it removed rather than 204, because two of the numbers are
-/// consequences the caller could not have predicted: checks detached, and
-/// tickets left carrying a tag that now names nothing.
+/// Answers with what it removed rather than 204, because one of the numbers is
+/// a consequence the caller could not have predicted: tickets left carrying a
+/// tag that now names nothing.
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    RawQuery(raw): RawQuery,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
     // Scope against the initiative's own project, exactly as `patch` does: naming
@@ -231,9 +226,7 @@ pub async fn delete(
         .get_initiative(&id)?
         .ok_or_else(|| ApiError::not_found("initiative", &id))?;
     ctx.require_project(&existing.project)?;
-    let pairs = query_pairs(raw.as_deref());
-    let force = matches!(first(&pairs, "force"), Some("true" | "1"));
-    let removed = state.store.delete_initiative(&id, force, &ctx.actor)?;
+    let removed = state.store.delete_initiative(&id, &ctx.actor)?;
     state.wake();
     Ok(Json(json!({
         "ok": true,
@@ -241,7 +234,6 @@ pub async fn delete(
         "project": existing.project,
         "entries": removed.entries,
         "bytes": removed.bytes,
-        "detached_checks": removed.detached_checks,
         "tagged_tickets": removed.tagged_tickets,
     })))
 }

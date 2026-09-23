@@ -26,13 +26,16 @@ vi.mock('@/lib/mindmaps', async (original) => ({
   createMindmap: api.createMindmap,
   mintMindmapSession: api.mintMindmapSession,
 }))
-vi.mock('@/lib/verification', async (original) => ({
-  ...(await original<typeof import('@/lib/verification')>()),
-  listChecks: vi.fn(async () => ({ items: [] })),
-}))
-vi.mock('@/lib/test-runs', async (original) => ({
-  ...(await original<typeof import('@/lib/test-runs')>()),
-  listDefinitions: vi.fn(async () => []),
+vi.mock('@/lib/behaviors', async (original) => ({
+  ...(await original<typeof import('@/lib/behaviors')>()),
+  fetchVerification: vi.fn(async () => ({
+    fresh_days: 14,
+    summary: { total: 0, verified: 0, failing: 0, stale: 0, untested: 0 },
+    sections: {},
+    unsectioned: 0,
+    unlinked_tests: { items: [], total: 0, limit: 50 },
+    latest_run: null,
+  })),
 }))
 vi.mock('@/hooks/useProjectUpdates', async (original) => ({
   ...(await original<typeof import('@/hooks/useProjectUpdates')>()),

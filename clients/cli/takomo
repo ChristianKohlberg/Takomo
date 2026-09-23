@@ -148,6 +148,9 @@ curl_never_sent() { case "$1" in 5|6|7) return 0 ;; *) return 1 ;; esac; }
 #   POST /v1/tickets               `takomo new` sends an Idempotency-Key and the
 #                                  store returns the original ticket (200, not a
 #                                  twin 201) for a repeat.
+#   PATCH /v1/behaviors/*          title/statement/section/tests are set-to-value.
+#   POST /v1/projects/*/runs       `takomo report` sends an Idempotency-Key and the
+#                                  store returns the original run for a repeat.
 #   POST .../claim                 same actor re-claiming is an idempotent lease
 #                                  renewal: same fence back, 200. (Only a
 #                                  *different* holder gets 409.)
@@ -185,7 +188,7 @@ replay_class() {
   case "$method" in
     GET|HEAD) echo safe; return ;;
     PUT) case "$path" in /v1/projects/*) echo safe; return ;; esac ;;
-    PATCH) case "$path" in /v1/tickets/*) echo safe; return ;; esac ;;
+    PATCH) case "$path" in /v1/tickets/*|/v1/behaviors/*) echo safe; return ;; esac ;;
     DELETE)
       case "$path" in
         /v1/tickets/*/deps*|/v1/shares/*|/v1/answer-links/*) echo safe; return ;;
@@ -195,6 +198,7 @@ replay_class() {
       case "$path" in
         /v1/tickets) case "$extra" in Idempotency-Key:*) echo safe; return ;; esac ;;
         /v1/tickets/*/comments) case "$extra" in Idempotency-Key:*) echo safe; return ;; esac ;;
+        /v1/projects/*/runs) case "$extra" in Idempotency-Key:*) echo safe; return ;; esac ;;
         /v1/questions) echo safe; return ;;
         /v1/tickets/*/claim|/v1/tickets/*/archive|/v1/tickets/*/unarchive|/v1/tickets/*/deps)
           echo safe; return ;;
@@ -2186,33 +2190,17 @@ PY
 #
 # `set --status parked` already covers "set aside and still readable", so this is
 # for what parking does not fix: a duplicate, a mistake, an experiment nobody
-# wants kept. --force detaches the verification checks filed under it instead of
-# refusing; the tickets tagged into the lane are never touched either way.
+# wants kept. The tickets tagged into the lane are never touched.
 cmd_initiative_rm() {
   local id=${1:-}
-  [ -n "$id" ] || die "initiative rm: usage: takomo initiative rm ID [--force]"
+  [ -n "$id" ] || die "initiative rm: usage: takomo initiative rm ID"
   shift
-  local force=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --force) force=1; shift ;;
-      *) die "initiative rm: unknown flag $1" ;;
-    esac
-  done
-  local path
-  path="/v1/initiatives/$(urlenc "$id")"
-  # `if`, not `[ ... ] && ...`: under `set -e` the && form returns 1 when the
-  # test fails, which would abandon the command instead of skipping the flag.
-  if [ -n "$force" ]; then
-    path="$path?force=true"
-  fi
-  api DELETE "$path" >/dev/null
+  [ $# -eq 0 ] || die "initiative rm: unexpected argument '$1'"
+  api DELETE "/v1/initiatives/$(urlenc "$id")" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 print(f"deleted {d['id']}, with {d.get('entries', 0)} entry/entries")
-if d.get("detached_checks"):
-    print(f"{d['detached_checks']} verification check(s) detached, not deleted.")
 if d.get("tagged_tickets"):
     n = d["tagged_tickets"]
     print(f"{n} ticket(s) still carry its initiative: tag; they are untouched and")
@@ -2220,331 +2208,200 @@ if d.get("tagged_tickets"):
 PY
 }
 
-# --- checks and environments -------------------------------------------------
-# Checklist is how a "done" claim becomes a verified one, and the loop it exists
-# to serve runs in a shell as often as it runs over MCP: find what needs
-# re-verifying, read where to run it, run it, say what happened.
+# --- verification: behaviors, linked tests, reported runs --------------------
+# A behavior is what the software must do, in words a person can check. Tests are
+# external: Takomo keeps only the key a runner reports for each, and a run is one
+# report of pass/fail per key against a commit. A behavior's status is computed
+# from the latest result of each linked key (see docs/verification.md).
 #
-# So the four verbs here are the loop, not CRUD parity — `takomo verify` is the
-# worklist, `takomo verdict` is the report back, `takomo env ls` is where to go.
-# Filing a check and its cases is also here, because a check is a sentence and a
-# case set is generated: both are things a shell hands over from a file or a
-# pipeline better than a textarea does.
-#
-# Takomo stores; the caller computes. Nothing below generates a case model or
-# judges a coverage claim — the store does not, and neither does this.
+# The verbs are the loop, not CRUD parity: `takomo verify` says what needs
+# attention, `takomo report` is how CI or an agent reports back, and
+# `takomo behavior link` ties a test someone just wrote to what it verifies.
 
-cmd_check() {
+cmd_behavior() {
   local sub=${1:-}
-  [ -n "$sub" ] || die "check: usage: takomo check ls|new|show|set|cases|rm ..."
+  [ -n "$sub" ] || die "behavior: usage: takomo behavior ls|new|show|set|link|unlink|rm ..."
   shift
   case "$sub" in
-    ls|list)          cmd_check_ls "$@" ;;
-    new|file)         cmd_check_new "$@" ;;
-    show)             cmd_check_show "$@" ;;
-    set)              cmd_check_set "$@" ;;
-    cases)            cmd_check_cases "$@" ;;
-    rm|archive)       cmd_check_archive "$@" ;;
-    *) die "check: unknown subcommand '$sub' (ls|new|show|set|cases|rm)" ;;
+    ls|list)   cmd_behavior_ls "$@" ;;
+    new)       cmd_behavior_new "$@" ;;
+    show)      cmd_behavior_show "$@" ;;
+    set)       cmd_behavior_set "$@" ;;
+    link)      cmd_behavior_link link "$@" ;;
+    unlink)    cmd_behavior_link unlink "$@" ;;
+    rm|delete) cmd_behavior_rm "$@" ;;
+    *) die "behavior: unknown subcommand '$sub' (ls|new|show|set|link|unlink|rm)" ;;
   esac
 }
 
-cmd_check_ls() {
-  local project="" initiative="" epic="" severity="" layer="" archived="" limit=""
+cmd_behavior_ls() {
+  local project="" status="" section="" q=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --project)    project=$2; shift 2 ;;
-      --initiative) initiative=$2; shift 2 ;;
-      --epic)       epic=$2; shift 2 ;;
-      --severity)   severity=$2; shift 2 ;;
-      --layer)      layer=$2; shift 2 ;;
-      --archived)   archived=1; shift ;;
-      --limit)      limit=$2; shift 2 ;;
-      -*) die "check ls: unknown flag $1" ;;
-      *)  die "check ls: unexpected argument '$1'" ;;
+      --project) project=$2; shift 2 ;;
+      --status)  status=$2; shift 2 ;;
+      --section) section=$2; shift 2 ;;
+      --q)       q=$2; shift 2 ;;
+      -*) die "behavior ls: unknown flag $1" ;;
+      *)  die "behavior ls: unexpected argument '$1'" ;;
     esac
   done
   project=$(resolve_project "$project")
-  [ -z "$limit" ] || is_uint "$limit" || die "check ls: --limit must be a positive integer"
-  local qs="" sep="?"
-  [ -n "$initiative" ] && { qs="$qs${sep}initiative=$(urlenc "$initiative")"; sep="&"; }
-  [ -n "$epic" ] && { qs="$qs${sep}epic=$(urlenc "$epic")"; sep="&"; }
-  [ -n "$severity" ] && { qs="$qs${sep}severity=$(urlenc "$severity")"; sep="&"; }
-  [ -n "$layer" ] && { qs="$qs${sep}layer=$(urlenc "$layer")"; sep="&"; }
-  [ -n "$archived" ] && { qs="$qs${sep}archived=include"; sep="&"; }
-  [ -n "$limit" ] && { qs="$qs${sep}limit=$limit"; sep="&"; }
-  api GET "/v1/projects/$(urlenc "$project")/checks$qs" >/dev/null
+  local qs
+  qs=$(TS_STATUS="$status" TS_SECTION="$section" TS_Q="$q" python3 <<'PY'
+import os
+from urllib.parse import urlencode
+p = {k: os.environ[e] for k, e in (("status", "TS_STATUS"), ("section", "TS_SECTION"), ("q", "TS_Q")) if os.environ.get(e)}
+print("?" + urlencode(p) if p else "")
+PY
+)
+  api GET "/v1/projects/$(urlenc "$project")/behaviors$qs" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-items = d.get("items", [])
+items = d.get("items") or []
 if not items:
-    print("(no checks)"); sys.exit()
-print(f"{'ID':<14} {'SEV':<9} {'LAYER':<6} {'CASES':<22} TITLE")
-for c in items:
-    n = c.get("cases") or {}
-    # The spread, not just a total: "12 cases" says nothing, while "8 ok · 3
-    # stale · 1 never" is the whole reason to look at the list.
-    parts = []
-    for key, word in (("approved", "ok"), ("verified", "ok"), ("stale", "stale"),
-                      ("failed", "fail"), ("never", "never"), ("unreachable", "n/a")):
-        v = n.get(key) or 0
-        if v: parts.append((word, v))
-    merged = {}
-    for word, v in parts: merged[word] = merged.get(word, 0) + v
-    spread = " · ".join(f"{v} {w}" for w, v in merged.items()) or "no cases"
-    print(f"{c.get('id',''):<14} {c.get('severity',''):<9} {c.get('layer',''):<6} {spread:<22} {c.get('title','')}")
-note = d.get("note")
-if note: print(f"\n{d.get('total')} total. {note}")
+    print("no behaviors"); sys.exit(0)
+print(f"{'ID':<13} {'STATUS':<9} {'TESTS':>5}  {'LAST':<22} TITLE")
+for b in items:
+    l = b.get("last_result") or {}
+    last = f"{(l.get('commit') or '-')[:8]} {l.get('at','')[:10]}" if l else "-"
+    print(f"{b['id']:<13} {b['status']:<9} {len(b.get('tests') or []):>5}  {last:<22} {b['title']}")
+if d.get("note"): print(d["note"])
 PY
 }
 
-cmd_check_new() {
-  local project="" title="" initiative="" epic="" layer="" severity=""
-  local body="" have_body="" bodyfile="" precondition=""
-  local -a globs=()
-  local -a envs=()
+cmd_behavior_new() {
+  local project="" title="" statement="" stmtfile="" section="" tests=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --project)      project=$2; shift 2 ;;
-      --initiative)   initiative=$2; shift 2 ;;
-      --epic)         epic=$2; shift 2 ;;
-      --layer)        layer=$2; shift 2 ;;
-      --severity)     severity=$2; shift 2 ;;
-      --body)         body=$2; have_body=1; shift 2 ;;
-      --body-file)    bodyfile=$2; shift 2 ;;
-      --precondition) precondition=$2; shift 2 ;;
-      --glob)         globs+=("$2"); shift 2 ;;
-      --env)          envs+=("$2"); shift 2 ;;
-      -*) die "check new: unknown flag $1" ;;
-      *)  if [ -z "$title" ]; then title=$1; shift; else die "check new: unexpected argument '$1'"; fi ;;
+      --project)        project=$2; shift 2 ;;
+      --statement)      statement=$2; shift 2 ;;
+      --statement-file) stmtfile=$2; shift 2 ;;
+      --section)        section=$2; shift 2 ;;
+      --test)           tests+=("$2"); shift 2 ;;
+      -*) die "behavior new: unknown flag $1" ;;
+      *)  if [ -z "$title" ]; then title=$1; shift; else die "behavior new: unexpected argument '$1'"; fi ;;
     esac
   done
-  [ -n "$title" ] || die "check new: usage: takomo check new TITLE [--initiative I] [--glob G]..."
-  [ -n "$have_body" ] && [ -n "$bodyfile" ] && die "check new: give either --body or --body-file, not both"
+  [ -n "$title" ] || die "behavior new: usage: takomo behavior new TITLE [--statement S|--statement-file F|-] [--section ID] [--test KEY]..."
   project=$(resolve_project "$project")
-  # The traversal is prose and can be long; reading it from a path preserves it
-  # exactly rather than squeezing it through an argument.
-  local tmpbody=""
-  if [ "$bodyfile" = "-" ]; then
-    tmpbody=$(mktemp); cat > "$tmpbody"; bodyfile=$tmpbody
-  elif [ -n "$bodyfile" ]; then
-    [ -r "$bodyfile" ] || die "check new: cannot read --body-file '$bodyfile'"
+  if [ -n "$stmtfile" ]; then
+    if [ "$stmtfile" = "-" ]; then statement=$(cat); else
+      [ -r "$stmtfile" ] || die "behavior new: cannot read --statement-file '$stmtfile'"
+      statement=$(cat "$stmtfile")
+    fi
   fi
   local data
-  data=$(TS_TITLE="$title" TS_INI="$initiative" TS_EPIC="$epic" TS_LAYER="$layer" \
-    TS_SEV="$severity" TS_BODY="$body" TS_BODYFILE="$bodyfile" TS_PRE="$precondition" \
-    TS_GLOBS="$(printf '%s\n' "${globs[@]+"${globs[@]}"}")" \
-    TS_ENVS="$(printf '%s\n' "${envs[@]+"${envs[@]}"}")" \
-    python3 <<'PY'
-import json, os
+  data=$(TS_TITLE="$title" TS_STMT="$statement" TS_SECTION="$section" python3 - ${tests[@]+"${tests[@]}"} <<'PY'
+import json, os, sys
 d = {"title": os.environ["TS_TITLE"]}
-bf = os.environ.get("TS_BODYFILE", "")
-if bf:
-    d["body"] = open(bf, encoding="utf-8").read()
-elif os.environ.get("TS_BODY", ""):
-    d["body"] = os.environ["TS_BODY"]
-for env, key in (("TS_INI", "initiative"), ("TS_EPIC", "epic"), ("TS_LAYER", "layer"),
-                 ("TS_SEV", "severity"), ("TS_PRE", "precondition")):
-    v = os.environ.get(env, "").strip()
-    if v: d[key] = v
-globs = [g for g in os.environ.get("TS_GLOBS", "").splitlines() if g.strip()]
-if globs: d["globs"] = globs
-envs = [e for e in os.environ.get("TS_ENVS", "").splitlines() if e.strip()]
-if envs: d["environments"] = envs
+if os.environ.get("TS_STMT"): d["statement"] = os.environ["TS_STMT"]
+if os.environ.get("TS_SECTION"): d["section"] = os.environ["TS_SECTION"]
+if sys.argv[1:]: d["tests"] = sys.argv[1:]
 print(json.dumps(d))
 PY
 )
-  [ -n "$tmpbody" ] && rm -f "$tmpbody"
-  api POST "/v1/projects/$(urlenc "$project")/checks" "$data" >/dev/null
+  api POST "/v1/projects/$(urlenc "$project")/behaviors" "$data" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-print(f"{d['id']}  [{d.get('severity','')}/{d.get('layer','')}]  {d.get('title','')}")
-if d.get("initiative"): print(f"  initiative: {d['initiative']}")
-print(f"\nNext: file the cases it crosses with —")
-print(f"  takomo check cases {d['id']} --case 'entities=2' --case 'entities=3'")
+print(f"{d['id']}  {d['status']}  {d['title']}")
+if not d.get("tests"):
+    print(f"  link the test that verifies it:  takomo behavior link {d['id']} KEY")
 PY
 }
 
-cmd_check_show() {
-  local id=${1:-}; [ -n "$id" ] || die "check show: usage: takomo check show ID [--cases]"
-  shift
-  local cases=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --cases) cases=1; shift ;;
-      -*) die "check show: unknown flag $1" ;;
-      *)  die "check show: unexpected argument '$1'" ;;
-    esac
-  done
-  api GET "/v1/checks/$(urlenc "$id")" >/dev/null
+cmd_behavior_show() {
+  local id=${1:-}; [ -n "$id" ] || die "behavior show: usage: takomo behavior show ID"
+  api GET "/v1/behaviors/$(urlenc "$id")" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
-c = json.load(open(sys.argv[1]))
-print(f"{c['id']}  [{c.get('severity','')}/{c.get('layer','')}]  {c.get('title','')}")
-if c.get("initiative"): print(f"initiative: {c['initiative']}")
-if c.get("epic"):       print(f"epic:       {c['epic']}")
-if c.get("precondition"): print(f"\nprecondition: {c['precondition']}")
-if c.get("body"): print(f"\n{c['body']}")
-if c.get("globs"): print(f"\nclaims: {', '.join(c['globs'])}")
-# An orphaned glob is the worst failure this feature has — it reads as covered
-# while matching nothing — so it is printed loudly rather than tucked away.
-if c.get("orphan_globs"):
-    print(f"ORPHANED (matched no file in the newest release): {', '.join(c['orphan_globs'])}")
-p = c.get("policy") or {}
-if p:
-    print(f"\nverification: {p.get('verification')} (from {p.get('verification_from')})")
-n = c.get("cases") or {}
-if n: print("cases: " + " · ".join(f"{k} {v}" for k, v in n.items() if v))
-# Where it must pass, and how each one stands. One line per environment
-# because "verified" and "never run" living in the same number is the thing
-# declaring environments exists to stop.
-for e in c.get("environment_cases") or []:
-    ec = e.get("cases") or {}
-    spread = " · ".join(f"{k} {v}" for k, v in ec.items() if v and k != "total") or "no cases"
-    print(f"  {e.get('slug',''):<14} {spread}")
-PY
-  if [ -n "$cases" ]; then
-    api GET "/v1/checks/$(urlenc "$id")/cases" >/dev/null
-    python3 - "$REQ_OUT" <<'PY'
-import json, sys
 d = json.load(open(sys.argv[1]))
-items = d.get("items", [])
-if not items: sys.exit()
-print(f"\n{'CASE':<14} {'STATE':<12} KEY")
-for c in items:
-    print(f"{c.get('id',''):<14} {c.get('state',''):<12} {c.get('key','')}")
-note = d.get("note")
-if note: print(f"\n{d.get('total')} total. {note}")
+print(f"{d['id']}  {d['status']}  {d['title']}")
+if d.get("section"): print(f"section: {d['section']}")
+if d.get("statement"): print("\n" + d["statement"] + "\n")
+rows = d.get("test_results") or []
+if not rows: print("no linked tests")
+for t in rows:
+    l = t.get("latest")
+    if l:
+        print(f"  {l['outcome']:<5} {(l.get('commit') or '-')[:8]:<8} {l['at'][:16]}  {t['test']}")
+        if l.get("detail"): print(f"        {l['detail']}")
+    else:
+        print(f"  {'-':<5} {'':<8} {'never reported':<16}  {t['test']}")
 PY
-  fi
 }
 
-cmd_check_set() {
-  local id=${1:-}; [ -n "$id" ] || die "check set: usage: takomo check set ID [--initiative I|--no-initiative] ..."
+cmd_behavior_set() {
+  local id=${1:-}; [ -n "$id" ] || die "behavior set: usage: takomo behavior set ID [--title T] [--statement S] [--section ID|--no-section]"
   shift
-  local initiative="" clear_ini="" severity="" layer="" title="" set_envs=""
-  local -a envs=()
+  local title="" statement="" section="" set_title="" set_stmt="" set_section=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --initiative)    initiative=$2; shift 2 ;;
-      --no-initiative) clear_ini=1; shift ;;
-      --severity)      severity=$2; shift 2 ;;
-      --layer)         layer=$2; shift 2 ;;
-      --title)         title=$2; shift 2 ;;
-      --env)           envs+=("$2"); set_envs=1; shift 2 ;;
-      --no-env)        set_envs=1; shift ;;
-      -*) die "check set: unknown flag $1" ;;
-      *)  die "check set: unexpected argument '$1'" ;;
+      --title)      title=$2; set_title=1; shift 2 ;;
+      --statement)  statement=$2; set_stmt=1; shift 2 ;;
+      --section)    section=$2; set_section=1; shift 2 ;;
+      --no-section) section=""; set_section=1; shift ;;
+      -*) die "behavior set: unknown flag $1" ;;
+      *)  die "behavior set: unexpected argument '$1'" ;;
     esac
   done
-  [ -n "$initiative" ] && [ -n "$clear_ini" ] && \
-    die "check set: give either --initiative or --no-initiative, not both"
   local data
-  data=$(TS_INI="$initiative" TS_CLEAR="$clear_ini" TS_SEV="$severity" \
-    TS_LAYER="$layer" TS_TITLE="$title" TS_SETENVS="$set_envs" \
-    TS_ENVS="$(printf '%s\n' "${envs[@]+"${envs[@]}"}")" python3 <<'PY'
+  data=$(TS_T="$title" TS_ST="$set_title" TS_S="$statement" TS_SS="$set_stmt" \
+    TS_SEC="$section" TS_SSEC="$set_section" python3 <<'PY'
 import json, os
 d = {}
-# Absent and null mean different things on this wire: null clears the link and
-# resumes "no initiative", which is why --no-initiative is its own flag.
-if os.environ.get("TS_CLEAR", ""):
-    d["initiative"] = None
-elif os.environ.get("TS_INI", "").strip():
-    d["initiative"] = os.environ["TS_INI"].strip()
-for env, key in (("TS_SEV", "severity"), ("TS_LAYER", "layer"), ("TS_TITLE", "title")):
-    v = os.environ.get(env, "").strip()
-    if v: d[key] = v
-# --env REPLACES the declared set, and --no-env clears it. Undeclaring keeps
-# whatever was recorded there, so this is narrowing what must pass rather than
-# discarding evidence.
-if os.environ.get("TS_SETENVS", ""):
-    d["environments"] = [e for e in os.environ.get("TS_ENVS", "").splitlines() if e.strip()]
+if os.environ["TS_ST"]: d["title"] = os.environ["TS_T"]
+if os.environ["TS_SS"]: d["statement"] = os.environ["TS_S"]
+if os.environ["TS_SSEC"]: d["section"] = os.environ["TS_SEC"] or None
 print(json.dumps(d))
 PY
 )
-  [ "$data" = "{}" ] && die "check set: nothing to change"
-  api PATCH "/v1/checks/$(urlenc "$id")" "$data" >/dev/null
-  python3 - "$REQ_OUT" <<'PY'
-import json, sys
-c = json.load(open(sys.argv[1]))
-print(f"{c['id']}  [{c.get('severity','')}/{c.get('layer','')}]  {c.get('title','')}")
-print(f"  initiative:   {c.get('initiative') or '(none)'}")
-slugs = [e.get('slug','') for e in (c.get('environments') or [])]
-print(f"  environments: {', '.join(slugs) or '(none — verified anywhere)'}")
-PY
-}
-
-# File the case set. `--case key` or `--case key=label`, repeated; or `--file`
-# for a JSON array, because a generated model comes out of a tool (PICT and
-# friends) rather than out of a person's fingers.
-cmd_check_cases() {
-  local id=${1:-}; [ -n "$id" ] || die "check cases: usage: takomo check cases ID --case KEY[::LABEL]... | --file F"
-  shift
-  local file="" keep=""
-  local -a cases=()
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --case)  cases+=("$2"); shift 2 ;;
-      --file)  file=$2; shift 2 ;;
-      --keep)  keep=1; shift ;;
-      -*) die "check cases: unknown flag $1" ;;
-      *)  die "check cases: unexpected argument '$1'" ;;
-    esac
-  done
-  [ ${#cases[@]} -gt 0 ] || [ -n "$file" ] || \
-    die "check cases: give --case KEY[::LABEL] (repeatable) or --file F"
-  if [ "$file" = "-" ]; then
-    local tmp; tmp=$(mktemp); cat > "$tmp"; file=$tmp
-  elif [ -n "$file" ]; then
-    [ -r "$file" ] || die "check cases: cannot read --file '$file'"
-  fi
-  local data
-  data=$(TS_FILE="$file" TS_KEEP="$keep" \
-    TS_CASES="$(printf '%s\n' "${cases[@]+"${cases[@]}"}")" python3 <<'PY'
-import json, os, sys
-f = os.environ.get("TS_FILE", "")
-if f:
-    raw = json.load(open(f, encoding="utf-8"))
-    cases = raw.get("cases") if isinstance(raw, dict) else raw
-    if not isinstance(cases, list):
-        sys.exit("takomo: --file must hold a JSON array of cases, or {\"cases\": [...]}")
-else:
-    cases = []
-    for line in os.environ.get("TS_CASES", "").splitlines():
-        if not line.strip(): continue
-        # `::`, not `=`. A case key is derived from its parameter assignment, so
-        # the common shapes are `entities=2` and `vat=19` — splitting on `=`
-        # would swallow the key at exactly the point it matters.
-        key, _, label = line.partition("::")
-        cases.append({"key": key.strip(), "label": label.strip()})
-d = {"cases": cases}
-# Filing REPLACES the set by default: a case the new set drops is retired, not
-# deleted, and one that returns is revived. --keep extends instead, for a model
-# being built up in pieces.
-if os.environ.get("TS_KEEP", ""): d["prune"] = False
-print(json.dumps(d))
-PY
-)
-  api PUT "/v1/checks/$(urlenc "$id")/cases" "$data" >/dev/null
+  api PATCH "/v1/behaviors/$(urlenc "$id")" "$data" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-print(f"added {d.get('added',0)} · updated {d.get('updated',0)} · "
-      f"retired {d.get('retired',0)} · revived {d.get('revived',0)} · live {d.get('live',0)}")
+print(f"{d['id']}  {d['status']}  {d['title']}")
 PY
 }
 
-cmd_check_archive() {
-  local id=${1:-}; [ -n "$id" ] || die "check archive: usage: takomo check rm ID"
-  api DELETE "/v1/checks/$(urlenc "$id")" >/dev/null
-  echo "archived $id (its cases and their verdict history are kept)"
+# Read-modify-write of the linked keys: PATCH replaces the whole list.
+cmd_behavior_link() {
+  local mode=$1; shift
+  local id=${1:-}; [ -n "$id" ] || die "behavior $mode: usage: takomo behavior $mode ID KEY..."
+  shift
+  [ $# -gt 0 ] || die "behavior $mode: name at least one test KEY"
+  api GET "/v1/behaviors/$(urlenc "$id")" >/dev/null
+  local data
+  data=$(python3 - "$REQ_OUT" "$mode" "$@" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+mode, keys = sys.argv[2], sys.argv[3:]
+tests = list(d.get("tests") or [])
+if mode == "link":
+    tests += [k for k in keys if k not in tests]
+else:
+    tests = [t for t in tests if t not in keys]
+print(json.dumps({"tests": tests}))
+PY
+)
+  api PATCH "/v1/behaviors/$(urlenc "$id")" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"{d['id']}  {d['status']}  {len(d.get('tests') or [])} test(s)")
+PY
 }
 
-# What needs re-verifying, split by who can clear it. Human time is the scarce
-# resource — a hundred cases cost an agent minutes and a person most of a day —
-# so the split is the answer, not a formatting choice.
+cmd_behavior_rm() {
+  local id=${1:-}; [ -n "$id" ] || die "behavior rm: usage: takomo behavior rm ID"
+  api DELETE "/v1/behaviors/$(urlenc "$id")" >/dev/null
+  echo "deleted $id (reported results are kept)"
+}
+
+# What needs attention: failing first, then stale and untested, then reported
+# tests no behavior links.
 cmd_verify() {
   local project=""
   while [ $# -gt 0 ]; do
@@ -2555,171 +2412,111 @@ cmd_verify() {
     esac
   done
   project=$(resolve_project "$project")
-  api GET "/v1/projects/$(urlenc "$project")/checklist/worklist" >/dev/null
-  python3 - "$REQ_OUT" <<'PY'
-import json, sys
+  local base
+  base="/v1/projects/$(urlenc "$project")"
+  api GET "$base/verification" >/dev/null
+  local summary; summary=$(cat "$REQ_OUT")
+  api GET "$base/behaviors" >/dev/null
+  TS_SUMMARY="$summary" python3 - "$REQ_OUT" <<'PY'
+import json, os, sys
+s = json.loads(os.environ["TS_SUMMARY"])
 d = json.load(open(sys.argv[1]))
-rel = d.get("release") or {}
-if rel: print(f"as of release {rel.get('id')} (seq {rel.get('seq')})\n")
-empty = True
-for side in ("agent", "human"):
-    s = d.get(side) or {}
-    items = s.get("items") or []
-    if not items: continue
-    empty = False
-    mins = s.get("minutes")
-    cost = f", ~{mins} min" if mins else ""
-    print(f"--- {side}: {s.get('cases', 0)} case(s){cost} ---")
-    show_env = any(i.get("environment_slug") for i in items)
-    head = f"{'CASE':<14} {'REASON':<9} {'SEV':<9} "
-    if show_env: head += f"{'WHERE':<12} "
-    print(head + "CHECK")
-    for i in items:
-        label = i.get("case_label") or i.get("case_key") or ""
-        row = f"{i.get('case',''):<14} {i.get('reason',''):<9} {i.get('severity',''):<9} "
-        if show_env: row += f"{i.get('environment_slug') or '-':<12} "
-        print(row + f"{i.get('check_title','')} — {label}")
-    # The URL is on the item precisely so nobody has to look it up. One line per
-    # DISTINCT environment: printing the first item's would read as the address
-    # for every row above it.
-    seen = {}
-    for i in items:
-        slug, url = i.get("environment_slug"), i.get("base_url")
-        if slug and url and slug not in seen:
-            seen[slug] = url
-    for slug, url in sorted(seen.items()):
-        print(f"    {slug}: {url}")
-    print()
-if empty:
-    print("nothing to re-verify")
-else:
-    print("Report a result with:  takomo verdict CASE --pass|--fail --note '...'")
-    print("A check that must pass in several environments also needs --environment SLUG.")
+n = s.get("summary") or {}
+print(f"{n.get('total',0)} behavior(s): {n.get('verified',0)} verified · {n.get('failing',0)} failing · "
+      f"{n.get('stale',0)} stale · {n.get('untested',0)} untested  (fresh = passed within {s.get('fresh_days')} days)")
+order = {"failing": 0, "stale": 1, "untested": 2}
+todo = sorted((b for b in d.get("items") or [] if b["status"] in order),
+              key=lambda b: (order[b["status"]], b["title"].lower()))
+if todo: print()
+for b in todo:
+    l = b.get("last_result") or {}
+    when = f"  last {l.get('outcome')} {(l.get('commit') or '')[:8]} {l.get('at','')[:10]}" if l else ""
+    print(f"{b['status']:<9} {b['id']:<13} {b['title']}{when}")
+shown = len(d.get("items") or [])
+if d.get("total", shown) > shown:
+    print(f"(listed from the first {shown} of {d['total']} behaviors — "
+          "narrow with: takomo behavior ls --status failing|stale|untested)")
+u = s.get("unlinked_tests") or {}
+if u.get("total"):
+    print(f"\n{u['total']} reported test(s) no behavior links:")
+    for t in u.get("items") or []:
+        print(f"  {t['outcome']:<5} {t['test']}")
+    print("Link one with:  takomo behavior link BEHAVIOR KEY")
 PY
 }
 
-# Report what you observed. An agent records what it saw; only a person's token
-# may assert that a person approved a case, which is the same line ask-a-human
-# draws — hence --human being a separate, deliberate flag.
-cmd_verdict() {
-  local case_id=${1:-}
-  [ -n "$case_id" ] || die "verdict: usage: takomo verdict CASE --pass|--fail|--blocked|--unreachable [--note N]"
-  shift
-  local verdict="" note="" human="" release="" env=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --pass)        verdict=pass; shift ;;
-      --fail)        verdict=fail; shift ;;
-      --blocked)     verdict=blocked; shift ;;
-      --unreachable) verdict=unreachable; shift ;;
-      --verdict)     verdict=$2; shift 2 ;;
-      --note)        note=$2; shift 2 ;;
-      --human)       human=1; shift ;;
-      --release)     release=$2; shift 2 ;;
-      --environment|--env) env=$2; shift 2 ;;
-      -*) die "verdict: unknown flag $1" ;;
-      *)  die "verdict: unexpected argument '$1'" ;;
-    esac
-  done
-  [ -n "$verdict" ] || die "verdict: say what you observed — --pass, --fail, --blocked or --unreachable"
-  [ "$verdict" = "fail" ] && [ -z "$note" ] && \
-    die "verdict: --fail needs --note saying what went wrong; a failure nobody described is one nobody can act on"
-  local data
-  data=$(TS_V="$verdict" TS_NOTE="$note" TS_HUMAN="$human" TS_REL="$release" \
-    TS_ENV="$env" python3 <<'PY'
-import json, os
-d = {"verdict": os.environ["TS_V"]}
-if os.environ.get("TS_NOTE", ""): d["note"] = os.environ["TS_NOTE"]
-if os.environ.get("TS_REL", "").strip(): d["release"] = os.environ["TS_REL"].strip()
-if os.environ.get("TS_HUMAN", ""): d["actor_kind"] = "human"
-# Required when the check must pass in more than one environment. Omitted is
-# fine for a check declaring one or none; the store refuses rather than guesses
-# when it is genuinely ambiguous.
-if os.environ.get("TS_ENV", "").strip(): d["environment"] = os.environ["TS_ENV"].strip()
-print(json.dumps(d))
-PY
-)
-  api POST "/v1/cases/$(urlenc "$case_id")/verdict" "$data" >/dev/null
-  python3 - "$REQ_OUT" <<'PY'
-import json, sys
-c = json.load(open(sys.argv[1]))
-print(f"{c['id']}  {c.get('state','')}  {c.get('key','')}")
-# With declared environments the case's own word is the WORST of them, so the
-# per-environment line is what says whether there is anything left to do.
-for e in c.get("environments") or []:
-    print(f"  {e.get('slug',''):<14} {e.get('state','')}")
-PY
-}
-
-cmd_coverage() {
-  local project="" initiative=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --project)    project=$2; shift 2 ;;
-      --initiative) initiative=$2; shift 2 ;;
-      -*) die "coverage: unknown flag $1" ;;
-      *)  die "coverage: unexpected argument '$1'" ;;
-    esac
-  done
-  # An initiative reads its own standing through its own sub-resource: "do the
-  # tests we agreed on still pass" is a different question from "how covered is
-  # this project", and they have different answers.
-  if [ -n "$initiative" ]; then
-    api GET "/v1/initiatives/$(urlenc "$initiative")/verification" >/dev/null
-    python3 - "$REQ_OUT" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-n = d.get("cases") or {}
-print(f"{d.get('title','')}  ({d.get('checks',0)} check(s), {d.get('percent',0)}%)")
-print(" · ".join(f"{k} {v}" for k, v in n.items() if v) or "no cases")
-if d.get("last_verified_at"): print(f"last verified {d['last_verified_at']}")
-if d.get("blocked"):
-    print(f"BLOCKED: {d.get('blocking_outstanding',0)} blocking case(s) outstanding")
-PY
-    return
-  fi
-  project=$(resolve_project "$project")
-  api GET "/v1/projects/$(urlenc "$project")/checklist/coverage" >/dev/null
-  python3 - "$REQ_OUT" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-n = d.get("cases") or {}
-print(f"{d.get('checks',0)} check(s), {d.get('percent',0)}% of verifiable cases")
-print(" · ".join(f"{k} {v}" for k, v in n.items() if v) or "no cases")
-rel = d.get("release") or {}
-if rel: print(f"as of {rel.get('ref')} (seq {rel.get('seq')})")
-PY
-}
-
-cmd_gate() {
-  local project=""
+# Report results. --pass/--fail are for a handful typed by hand (--detail
+# describes the one before it); --file takes JSON from a pipeline:
+# [{"test","outcome","detail"?}] or {"results": [...]}. The commit defaults to
+# the checkout's HEAD, and an idempotency key makes a retried report land once.
+cmd_report() {
+  local project="" commit="" note="" file="" key="" results=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project=$2; shift 2 ;;
-      -*) die "gate: unknown flag $1" ;;
-      *)  die "gate: unexpected argument '$1'" ;;
+      --commit)  commit=$2; shift 2 ;;
+      --note)    note=$2; shift 2 ;;
+      --pass)    results+=("pass" "$2"); shift 2 ;;
+      --fail)    results+=("fail" "$2"); shift 2 ;;
+      --detail)  [ ${#results[@]} -gt 0 ] || die "report: --detail follows the --pass/--fail it describes"
+                 results+=("detail" "$2"); shift 2 ;;
+      --file)    file=$2; shift 2 ;;
+      --idempotency-key) key=$2; shift 2 ;;
+      -*) die "report: unknown flag $1" ;;
+      *)  die "report: unexpected argument '$1'" ;;
     esac
   done
   project=$(resolve_project "$project")
-  api GET "/v1/projects/$(urlenc "$project")/checklist/gate" >/dev/null
+  if [ -n "$file" ] && [ "$file" != "-" ] && [ ! -r "$file" ]; then
+    die "report: cannot read --file '$file'"
+  fi
+  [ -n "$file" ] || [ ${#results[@]} -gt 0 ] || \
+    die "report: usage: takomo report [--commit SHA] [--note N] (--pass KEY | --fail KEY [--detail D])... | --file F|-"
+  # The python below reads its program from stdin, so piped results are
+  # buffered to a file first.
+  local tmpfile=""
+  if [ "$file" = "-" ]; then
+    tmpfile=$(mktemp); cat > "$tmpfile"; file=$tmpfile
+  fi
+  [ -n "$commit" ] || commit=$(git rev-parse --short HEAD 2>/dev/null || true)
+  [ -n "$key" ] || key="cli-$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  local data
+  data=$(TS_COMMIT="$commit" TS_NOTE="$note" TS_FILE="$file" python3 - ${results[@]+"${results[@]}"} <<'PY'
+import json, os, sys
+results = []
+f = os.environ.get("TS_FILE")
+if f:
+    raw = json.load(open(f))
+    results = raw.get("results", []) if isinstance(raw, dict) else raw
+args = sys.argv[1:]
+for kind, value in zip(args[0::2], args[1::2]):
+    if kind == "detail":
+        results[-1]["detail"] = value
+    else:
+        results.append({"test": value, "outcome": kind})
+d = {"results": results}
+if os.environ.get("TS_COMMIT"): d["commit"] = os.environ["TS_COMMIT"]
+if os.environ.get("TS_NOTE"): d["note"] = os.environ["TS_NOTE"]
+print(json.dumps(d))
+PY
+)
+  [ -z "$tmpfile" ] || rm -f "$tmpfile"
+  api POST "/v1/projects/$(urlenc "$project")/runs" "$data" "Idempotency-Key: $key" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-b = d.get("blocking") or {}
-if d.get("blocked"):
-    print(f"BLOCKED — {b.get('agent_cases',0)} agent + {b.get('human_cases',0)} human "
-          f"blocking case(s) outstanding")
-    for i in (b.get("items") or [])[:20]:
-        print(f"  {i.get('case','')}  {i.get('reason',''):<9} {i.get('check_title','')}")
-else:
-    print("clear — no blocking verification outstanding")
-adv = d.get("advisory_outstanding") or 0
-# Advisory nags rather than blocks: a gate that fires on everything gets
-# overridden out of habit and stops meaning anything.
-if adv: print(f"({adv} advisory case(s) outstanding — these do not block)")
-sys.exit(1 if d.get("blocked") else 0)
+r = d["run"]
+print(f"{r['id']}  {r['passed']} passed, {r['failed']} failed"
+      f"{'  @ ' + r['commit'] if r.get('commit') else ''}  — {d.get('behaviors_affected',0)} behavior(s) affected")
+if d.get("unlinked"):
+    print(f"{len(d['unlinked'])} test(s) no behavior links: " + ", ".join(d["unlinked"][:10])
+          + (" …" if len(d["unlinked"]) > 10 else ""))
 PY
 }
+
+# --- environments --------------------------------------------------------------
+# Where the software runs. Takomo stores this and runs none of it: `bring_up` and
+# `teardown` are prose handed to whoever needs them next.
 
 cmd_env() {
   local sub=${1:-}
@@ -2904,7 +2701,7 @@ PY
 cmd_env_archive() {
   local id=${1:-}; [ -n "$id" ] || die "env archive: usage: takomo env rm ID"
   api DELETE "/v1/environments/$(urlenc "$id")" >/dev/null
-  echo "archived $id (verdicts taken there still reference it; restore with 'takomo env set' after unarchiving via the API)"
+  echo "archived $id (history may still name it; restore with 'takomo env set' after unarchiving via the API)"
 }
 
 # --- ask-a-human board -------------------------------------------------------
@@ -4596,55 +4393,37 @@ Initiatives (an idea being nurtured — not work: no claim, no lease, no queue):
          edit how it is DESCRIBED; entries are append-only on every surface.
          Repeating --label/--tag replaces the whole list.
          `parked` is set aside; `distilled` means its substance became tickets.
-  takomo initiative rm ID [--force]
+  takomo initiative rm ID
          delete it and its entries. For what `parked` does not fix — a duplicate,
-         a mistake, an experiment. Refuses while a verification check names it;
-         --force detaches those instead. Tickets tagged into the lane are never
+         a mistake, an experiment. Tickets tagged into the lane are never
          touched: they simply report under `uninitiated` afterwards.
 
   Writing the three-pane document — the panes, their citations, and the threads
   anchored in them — stays in /initiatives, where the editor knows about citation
   marks. `takomo roadmap` shows initiatives as the lanes their epics ship in.
 
-Verification (checks — how a "done" claim becomes a verified one):
-  takomo verify [--project P]          what needs re-verifying, split by who can
-         clear it: an agent list and a human list. Human time is the scarce
-         resource, so the split IS the answer.
-  takomo verdict CASE --pass|--fail|--blocked|--unreachable [--note N] [--human]
-         [--environment SLUG]
-         report what you observed. --fail needs a --note. --human asserts that a
-         PERSON approved it and needs a token with the `human` scope — an agent
-         records what it saw, a person approves. --environment is REQUIRED when
-         the check must pass in more than one: a bare verdict there does not say
-         what you saw, and it is refused rather than filed against a guess.
-  takomo check ls [--project P] [--initiative I|none] [--epic E] [--severity S] [--layer L]
-         `--initiative none` finds the checks no initiative claims: the gap
-         between what was agreed and what got written down.
-  takomo check new TITLE [--initiative I] [--epic E] [--layer ui|api|other]
-         [--severity blocking|advisory|low] [--glob G]... [--env SLUG]...
-         [--body B | --body-file F|-] [--precondition P]
-         --env declares where it must pass. Each case is then tracked per
-         environment, so "verified on staging, never run on production" is
-         expressible instead of collapsing into one verdict. Omit it for a check
-         whose result does not depend on where it runs.
-         ONE action, ONE entry precondition, ONE layer. A create form, a finalize
-         step and a cancel action are three checks, not one.
-  takomo check cases ID --case KEY[::LABEL]... | --file F|-   [--keep]
-         file the generated case set. Filing REPLACES it: a case the new set
-         drops is retired (its verdict history kept), one that returns is
-         revived. --keep extends instead. --file takes the JSON a model
-         generator emits, which is where case sets actually come from.
-  takomo check show ID [--cases]
-  takomo check set ID [--initiative I|--no-initiative] [--env SLUG]... [--no-env]
-         --env REPLACES the declared set; --no-env clears it. Undeclaring an
-         environment KEEPS the verdicts recorded there, so narrowing what must
-         pass never discards evidence.
-  takomo check rm ID               archive it; cases and verdicts are kept
-  takomo coverage [--project P | --initiative I]
-         per project, or "do the tests we agreed on still pass" per initiative.
-  takomo gate [--project P]        can this ship? exits non-zero when blocked.
+Verification (behaviors — does the software still do what it should?):
+  takomo verify [--project P]      status counts, then what needs attention:
+         failing, stale (no pass within 14 days), untested — and reported
+         tests no behavior links.
+  takomo report [--commit SHA] [--note N] (--pass KEY | --fail KEY [--detail D])...
+         | --file F|-
+         report one run. --file takes JSON from a pipeline, a list of
+         {"test","outcome","detail"?} or {"results": [...]}. --commit defaults to
+         the checkout's HEAD. --note says why these tests, when you chose a
+         subset. A test that could not run is a --fail with a --detail; leave
+         skipped ones out.
+  takomo behavior ls [--status S] [--section ID|none] [--q TEXT]
+  takomo behavior new TITLE [--statement S | --statement-file F|-] [--section ID]
+         [--test KEY]...
+         describe what the software must do, in words a person can check.
+         Restate the specification; do not invent requirements.
+  takomo behavior show ID          each linked test with its latest result
+  takomo behavior link ID KEY...   link the tests that verify it; unlink removes
+  takomo behavior set ID [--title T] [--statement S] [--section ID|--no-section]
+  takomo behavior rm ID            reported results are kept
 
-Environments (where a check can be run — Takomo stores this and runs none of it):
+Environments (where the software runs — Takomo stores this and runs none of it):
   takomo env ls [--project P] [--kind K] [--archived]
   takomo env new SLUG [--name N] [--kind local|ephemeral|shared|staging|production|other]
          [--base-url U] [--bring-up C] [--teardown C]
@@ -4713,12 +4492,10 @@ main() {
     release) cmd_release "$@" ;;
     initiative|ini) cmd_initiative "$@" ;;
     mindmap|mm)  cmd_mindmap "$@" ;;
-    check)   cmd_check "$@" ;;
+    behavior|bhv) cmd_behavior "$@" ;;
     env|environment) cmd_env "$@" ;;
     verify)  cmd_verify "$@" ;;
-    verdict) cmd_verdict "$@" ;;
-    coverage) cmd_coverage "$@" ;;
-    gate)    cmd_gate "$@" ;;
+    report)  cmd_report "$@" ;;
     ask)         cmd_ask "$@" ;;
     answer)      cmd_answer "$@" ;;
     answer-link) cmd_answer_link "$@" ;;
