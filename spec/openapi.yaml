@@ -12121,7 +12121,9 @@ components:
         title: { type: string, maxLength: 300 }
         statement: { type: string, maxLength: 20000 }
         section: { type: [string, "null"], description: 'A node id of this project''s plan, or null to unlink.' }
-        tests: { type: array, maxItems: 100, items: { type: string, maxLength: 500 }, description: 'Replaces the full list.' }
+        tests: { type: array, maxItems: 100, items: { type: string, maxLength: 500 }, description: 'Replaces the full list. Cannot be combined with add_tests/remove_tests.' }
+        add_tests: { type: array, items: { type: string, maxLength: 500 }, description: 'Keys to link, keeping those already linked. Applied against the current list inside the write, so concurrent edits are kept; the result may hold at most 100 keys.' }
+        remove_tests: { type: array, items: { type: string, maxLength: 500 }, description: 'Keys to unlink, keeping the rest. Keys not linked are ignored; a key in both lists ends up unlinked.' }
     RunReport:
       type: object
       required: [results]

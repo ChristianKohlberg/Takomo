@@ -25,7 +25,14 @@ use serde_json::{Map, Value};
 use std::sync::Arc;
 
 const CREATE_FIELDS: [&str; 4] = ["title", "statement", "section", "tests"];
-const PATCH_FIELDS: [&str; 4] = ["title", "statement", "section", "tests"];
+const PATCH_FIELDS: [&str; 6] = [
+    "title",
+    "statement",
+    "section",
+    "tests",
+    "add_tests",
+    "remove_tests",
+];
 const RUN_FIELDS: [&str; 3] = ["commit", "note", "results"];
 const RESULT_FIELDS: [&str; 3] = ["test", "outcome", "detail"];
 
@@ -177,7 +184,7 @@ pub async fn get(
 }
 
 /// PATCH /v1/behaviors/{id} (write). `section: null` unlinks it; `tests`
-/// replaces the whole list.
+/// replaces the whole list; `add_tests`/`remove_tests` change it in place.
 pub async fn patch(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
@@ -201,6 +208,8 @@ pub async fn patch(
         statement: get_str(obj, "statement")?,
         section,
         tests: get_string_array(obj, "tests")?,
+        add_tests: get_string_array(obj, "add_tests")?,
+        remove_tests: get_string_array(obj, "remove_tests")?,
     };
     let behavior = state.store.patch_behavior(&id, &patch, &ctx.actor)?;
     state.wake();

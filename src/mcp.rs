@@ -998,9 +998,13 @@ pub struct BehaviorUpdateArgs {
     pub statement: Option<String>,
     /// New plan section (node id), or "" to unlink it from any section.
     pub section: Option<String>,
-    /// Replaces the full list of linked test keys. Read the behavior first and
-    /// send the list you want it to end with.
+    /// Replaces the full list of linked test keys. Prefer `add_tests` /
+    /// `remove_tests`: another agent may be linking at the same time.
     pub tests: Option<Vec<String>>,
+    /// Test keys to link, keeping the ones already linked.
+    pub add_tests: Option<Vec<String>>,
+    /// Test keys to unlink, keeping the rest.
+    pub remove_tests: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1761,9 +1765,10 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "Change a behavior's title, statement or section, or replace its linked test \
-        keys (send the full list you want). Use it to link a test you just wrote, or to move a \
-        behavior to the section it belongs to."
+        description = "Change a behavior's title, statement or section, or its linked test keys: \
+        `add_tests` links keys and `remove_tests` unlinks them, keeping the rest even if another \
+        agent is editing too; `tests` replaces the whole list. Use it to link a test you just \
+        wrote, or to move a behavior to the section it belongs to."
     )]
     async fn takomo_behavior_update(
         &self,
@@ -1792,6 +1797,8 @@ impl TakomoMcp {
                 statement: a.statement,
                 section,
                 tests: a.tests,
+                add_tests: a.add_tests,
+                remove_tests: a.remove_tests,
             };
             let b = self
                 .state

@@ -61,8 +61,9 @@ anything.
    the plan section it comes from when there is one. A behavior restates the
    specification; it must not silently add requirements. If a success condition
    is unclear, clarify the specification instead.
-2. **Link** the tests that show it: `PATCH /v1/behaviors/{id}` with `tests`
-   (replaces the list).
+2. **Link** the tests that show it: `PATCH /v1/behaviors/{id}` with
+   `add_tests` or `remove_tests`, applied against the current list so
+   concurrent links are kept. `tests` replaces the whole list.
 3. **Report** runs from CI or an agent: `POST /v1/projects/{project}/runs` with
    `commit`, `note` and `results`. Send an `Idempotency-Key` header so a retried
    report records once. The reply lists reported keys no behavior links.

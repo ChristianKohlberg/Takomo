@@ -3752,7 +3752,7 @@ async fn mcp_drives_the_behavior_loop() {
         .tool(
             &app.worker,
             "takomo_behavior_update",
-            json!({ "id": id, "tests": ["agent:failed-save", "agent:stray"] }),
+            json!({ "id": id, "add_tests": ["agent:stray"] }),
         )
         .await;
     assert!(!is_err, "{updated}");

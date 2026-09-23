@@ -150,11 +150,12 @@ export function getBehavior(token: string, id: string): Promise<BehaviorDetail> 
 }
 
 /** `section: null` clears the link; `tests` replaces the full list. */
-export function patchBehavior(
-  token: string,
-  id: string,
-  fields: Partial<BehaviorFields>,
-): Promise<Behavior> {
+/** A behavior edit. `tests` replaces the whole list; prefer `add_tests` and
+ * `remove_tests`, which the server applies against the current list, so a
+ * link someone else makes at the same moment is kept. */
+export type BehaviorPatch = Partial<BehaviorFields> & { add_tests?: string[]; remove_tests?: string[] }
+
+export function patchBehavior(token: string, id: string, fields: BehaviorPatch): Promise<Behavior> {
   return api<Behavior>(token, `/behaviors/${enc(id)}`, {
     method: 'PATCH',
     headers: json,

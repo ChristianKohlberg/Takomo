@@ -263,7 +263,7 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
                     total={verification.unlinked_tests.total}
                     onLink={async (behavior, test) => {
                       try {
-                        await patchBehavior(token, behavior.id, { tests: [...behavior.tests, test] })
+                        await patchBehavior(token, behavior.id, { add_tests: [test] })
                         await changed()
                       } catch (error) {
                         onError(error)

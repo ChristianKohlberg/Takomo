@@ -59,7 +59,9 @@ the behavior, and any failure fails it.
 
 Use the key the runner prints, prefixed by runner: `cargo:api::save_conflict`,
 `vitest:editor undo`, `playwright:invoices.spec.ts › split`. Link with
-`takomo_behavior_update` (send the full list) or `takomo behavior link ID KEY...`.
+`takomo_behavior_update` with `add_tests` (or `remove_tests` to unlink) or
+`takomo behavior link ID KEY...`. Avoid `tests`: it replaces the whole list and
+drops a link another agent made meanwhile.
 
 No automated test yet? Link `agent:<slug>`: the behavior's statement is your script.
 Verify it against a registered environment (`takomo_environments`) and report the
