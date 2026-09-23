@@ -14,9 +14,10 @@ export interface AppHeaderProps {
 
 export function AppHeader({ title, subtitle, children, views }: AppHeaderProps) {
   return <header className={cn('bg-card border-b-border-soft grid min-h-[58px] flex-none grid-cols-[minmax(0,1fr)] items-center gap-2 border-b px-3 py-2.5 sm:px-5', views ? 'grid-cols-[minmax(7rem,1fr)_auto] md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]' : 'grid-cols-[auto_minmax(0,1fr)]')}>
-    <div className="min-w-0">
-      <h1 className="text-foreground truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>
-      {subtitle && <p className="text-muted-foreground truncate text-sm">{subtitle}</p>}
+    {/* Phones: title and subtitle share one line, so the content starts sooner. */}
+    <div className="flex min-w-0 items-baseline gap-2 md:block">
+      <h1 className="text-foreground shrink-0 truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>
+      {subtitle && <p className="text-muted-foreground min-w-0 truncate text-sm">{subtitle}</p>}
     </div>
     {/* Phones: title and actions share the first row and the views take a full
         row of their own, so a long view label can never squeeze the title away. */}

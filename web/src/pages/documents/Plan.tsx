@@ -57,7 +57,8 @@ import { DocumentStart } from './DocumentStart'
 import { sectionSummaries, setSectionSummary, removeSectionSummary } from '@/lib/section-collapse'
 import { insertPlanSection } from '@/lib/plan-insert'
 import type { Locale } from '@/lib/i18n'
-import { ChevronDownIcon } from 'lucide-react'
+import { ChevronDownIcon, ChevronRight, ShieldAlert, ShieldCheck } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as Y from 'yjs'
 
@@ -154,10 +155,12 @@ export interface PlanProps {
   appearance?: DocumentAppearance
   conversationFor?: (node: string) => ReactNode
   locale?: Locale
-  testsFor: (node: string) => { total: number; failing: number }
+  testsFor: (node: string) => { total: number; failing: number; verified?: number }
   onShowTests: (node: string) => void
   testsLabel: string
   failedLabel: string
+  /** "verified", for the status line under a section that behaviors name. */
+  verifiedLabel?: string
   onError: (error: unknown) => void
   session: MindmapSession
   standing: PlanStanding
@@ -206,6 +209,7 @@ function ConnectedPlan({
   onShowTests,
   testsLabel,
   failedLabel,
+  verifiedLabel = 'verified',
   session,
   standing,
   trace,
@@ -928,6 +932,15 @@ function ConnectedPlan({
                   onReview={() => onReview(row.key)}
                   onShowOnMap={() => onShowOnMap(row.key)}
                   onShowTests={() => onShowTests(row.key)}
+                  testsStatus={testsFor(row.key).total > 0 ? (
+                    <TestsStatusLine
+                      counts={testsFor(row.key)}
+                      verifiedLabel={verifiedLabel}
+                      failedLabel={failedLabel}
+                      label={testsLabel}
+                      onOpen={() => onShowTests(row.key)}
+                    />
+                  ) : undefined}
                   testsLabel={`${testsLabel} (${testsFor(row.key).total})${testsFor(row.key).failing ? ` · ${testsFor(row.key).failing} ${failedLabel}` : ''}`}
                   failingTests={testsFor(row.key).failing > 0}
                   pending={pending[row.key] ?? 0}
@@ -1013,5 +1026,50 @@ function ConnectedPlan({
       </aside>}
       </div>
     </main></DocumentReviewProvider>
+  )
+}
+
+/**
+ * A section's verification at a glance, under its heading: how many of the
+ * behaviors that name it are verified, and whether any fail. It opens the
+ * Tests view on that section; the detail lives there.
+ */
+function TestsStatusLine({
+  counts,
+  verifiedLabel,
+  failedLabel,
+  label,
+  onOpen,
+}: {
+  counts: { total: number; failing: number; verified?: number }
+  verifiedLabel: string
+  failedLabel: string
+  label: string
+  onOpen: () => void
+}) {
+  const failing = counts.failing > 0
+  const done = !failing && counts.verified === counts.total
+  const Icon = failing ? ShieldAlert : ShieldCheck
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={`${label}: ${counts.verified ?? 0}/${counts.total} ${verifiedLabel}${failing ? `, ${counts.failing} ${failedLabel}` : ''}`}
+      className={cn(
+        'mb-2 inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs hover:underline',
+        failing ? 'border-nfbd bg-nfbg text-nf' : done ? 'border-okbd bg-okbg text-ok' : 'text-muted-foreground',
+      )}
+    >
+      <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+      <span className="tabular-nums">
+        {counts.verified ?? 0}/{counts.total} {verifiedLabel}
+      </span>
+      {failing && (
+        <span className="font-semibold tabular-nums">
+          · {counts.failing} {failedLabel}
+        </span>
+      )}
+      <ChevronRight className="size-3 shrink-0" aria-hidden="true" />
+    </button>
   )
 }

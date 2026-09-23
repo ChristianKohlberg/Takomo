@@ -24,6 +24,7 @@
 // thought is the dialog; there is no second way to change any field.
 import { firstSentence, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 import type { MapNode, Relationship } from '@/lib/mindmap-doc'
+import { ShieldAlert, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   NodeNameInput,
@@ -192,7 +193,7 @@ export function NodeCard({
               pass is the one thing on this map somebody has to act on. */}
           {tests && (
             <span
-              className={cn(tests.failing > 0 && 'text-nf font-[650]')}
+              className={cn('inline-flex items-center gap-0.5', tests.failing > 0 && 'text-nf font-[650]')}
               title={
                 tests.failing > 0
                   ? labels.testsFailing
@@ -201,7 +202,13 @@ export function NodeCard({
                   : labels.tests.replace('{n}', String(tests.total))
               }
             >
-              ⛉ {tests.total}
+              {/* A drawn shield: the ⛉ glyph is missing from common UI fonts and rendered as a box. */}
+              {tests.failing > 0 ? (
+                <ShieldAlert className="size-3" aria-hidden="true" />
+              ) : (
+                <ShieldCheck className="size-3" aria-hidden="true" />
+              )}
+              {tests.total}
               {tests.failing > 0 ? ` · ${tests.failing}` : ''}
             </span>
           )}

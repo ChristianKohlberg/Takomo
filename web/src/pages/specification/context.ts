@@ -32,7 +32,7 @@ export interface SpecificationState {
   openTests: (section: string | null) => void
   /** Select a behavior (`?behavior=`), or clear the selection with null. */
   openBehavior: (id: string | null) => void
-  testsFor: (section: string) => { total: number; failing: number }
+  testsFor: (section: string) => { total: number; failing: number; verified: number }
 }
 export const SpecificationContext = createContext<SpecificationState | null>(null)
 export function useSpecification() {
