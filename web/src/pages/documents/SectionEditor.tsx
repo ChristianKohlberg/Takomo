@@ -33,6 +33,8 @@ import { SlashInsert, slashMatch, type SlashMatch } from '@/lib/slash-insert'
 import { SlashMenu } from './SlashMenu'
 import { SectionReferenceMenu } from './SectionReferenceMenu'
 import { SectionReferenceTrigger, referenceMatch, type ReferenceMatch } from '@/lib/section-reference-trigger'
+import { CollapsibleBlock, CollapsibleSummary, CollapsibleContent, refreshCollapsibleLabels } from '@/lib/collapsible-block'
+import '@/styles/document-collapsible.css'
 import { TableToolbar } from './TableToolbar'
 import { STR } from './strings'
 import type { Locale } from '@/lib/i18n'
@@ -212,6 +214,8 @@ export default function SectionEditor({
         // somebody else's sentence.
         StarterKit.configure({ undoRedo: false, codeBlock: false }),
         CleanPaste,
+        CollapsibleBlock.configure({ labels: () => ({ title: 'Details', unwrap: localeRef.current === 'de' ? 'Einklappung entfernen' : 'Remove folding', expand: localeRef.current === 'de' ? 'Aufklappen' : 'Expand', collapse: localeRef.current === 'de' ? 'Einklappen' : 'Collapse' }) }),
+        CollapsibleSummary, CollapsibleContent,
         DiagramCodeBlock.configure({ access: () => accessRef.current, accessChanges: diagramAccessEvents }),
         SectionReferenceTrigger.configure({ menuId: referenceId, onMatch: setReference, onKey: event => referenceKeys.current?.(event) ?? false }),
         SlashInsert.configure({ menuId: slashId, onMatch: setSlash, onKey: event => slashKeys.current?.(event) ?? false }),
@@ -306,7 +310,7 @@ export default function SectionEditor({
   }, [editor, label])
 
   useEffect(() => {
-    if (editor) refreshSectionReferenceLabels(editor)
+    if (editor) { refreshSectionReferenceLabels(editor); refreshCollapsibleLabels(editor) }
   }, [editor, locale])
 
   useEffect(() => {

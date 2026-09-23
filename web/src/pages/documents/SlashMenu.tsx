@@ -10,6 +10,7 @@ const choices: { kind: InsertKind | 'collapse'; label: keyof typeof STR.en; sear
   { kind: 'heading2', label: 'slashHeading2', search: 'heading subtitle überschrift h2', icon: 'H2', level: 2 },
   { kind: 'heading3', label: 'slashHeading3', search: 'heading überschrift h3', icon: 'H3', level: 3 },
   { kind: 'collapse', label: 'slashCollapse', search: 'collapse summary einklappen zusammenfassung', icon: '▸' },
+  { kind: 'collapsibleBlock', label: 'slashCollapsibleBlock', search: 'toggle details collapsible block einklappbar klappblock', icon: '▹' },
   { kind: 'bulletList', label: 'slashBullets', search: 'bullet list liste aufzählung', icon: '•' },
   { kind: 'orderedList', label: 'slashNumbered', search: 'numbered ordered list liste nummeriert', icon: '1.' },
   { kind: 'quote', label: 'slashQuote', search: 'quote quotation blockquote zitat', icon: '❝' },

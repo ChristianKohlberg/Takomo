@@ -45,7 +45,7 @@ export function sectionBlocks(node: { prose_structure?: unknown; prose_xml?: str
   if (!node.prose_xml || typeof DOMParser === 'undefined') return null
   const doc = new DOMParser().parseFromString(`<saved>${node.prose_xml}</saved>`, 'application/xml')
   if (doc.querySelector('parsererror')) return null
-  const tags = ['tableRow', 'tableCell', 'tableHeader', 'codeBlock', 'sectionReference', 'bulletList', 'orderedList', 'listItem', 'hardBreak', 'horizontalRule']
+  const tags = ['collapsibleBlock', 'collapsibleSummary', 'collapsibleContent', 'tableRow', 'tableCell', 'tableHeader', 'codeBlock', 'sectionReference', 'bulletList', 'orderedList', 'listItem', 'hardBreak', 'horizontalRule']
   const marks = ['bold', 'italic', 'strike', 'code', 'link', 'underline', 'highlight', 'subscript', 'superscript', 'textStyle']
   const attributesOf = (element: Element) => Object.fromEntries(Array.from(element.attributes ?? [], a => [a.name, a.value]))
   const canonicalTag = (element: Element) => {

@@ -30,7 +30,7 @@ export function proseMatches(doc: PMNode, query: string): TextMatch[] {
   return found
 }
 
-const textBlocks = new Set(['paragraph', 'heading', 'codeBlock'])
+const textBlocks = new Set(['paragraph', 'heading', 'codeBlock', 'collapsibleSummary'])
 const leaves = new Set(['hardBreak', 'horizontalRule', 'image'])
 
 function inlineSize(part: Y.XmlElement | Y.XmlText | Y.XmlHook): number {

@@ -170,7 +170,7 @@ function readNumber(m: Inner, key: string): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function readAttachments(m: Inner): Attachment[] {
+export function readAttachments(m: Inner): Attachment[] {
   const value = m.get('attachments')
   if (!(value instanceof Y.Map)) return []
   const out: Attachment[] = []

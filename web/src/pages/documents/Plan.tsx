@@ -1,3 +1,4 @@
+import { SectionReferences } from '@/components/documents/SectionReferences'
 import { DocumentReviewProvider } from '@/components/documents/DocumentReview'
 import { highlightSearchPassage } from '@/lib/document-search-highlight'
 import { useDocumentNumbering } from '@/components/documents/DocumentNumberingControls'
@@ -991,6 +992,8 @@ function ConnectedPlan({
                       {preview || labels.proseEmpty}
                     </p>
                   )}
+                  <SectionReferences ydoc={ydoc} sectionId={row.key} title={row.title} locale={locale} canWrite={canWrite}
+                    onChange={change => { if (!canWrite) return; if (history) history.record(change); else change(); onEdited(row.key) }} />
                   <div className="section-discussion">{conversationFor?.(row.key)}</div>
                   {comments?.section === row.key && <DocumentComments key={row.key} ydoc={ydoc} sectionId={row.key}
                     editor={commentsEditor} actor={session.display} locale={locale} canWrite={canWrite}

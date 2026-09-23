@@ -30,6 +30,7 @@ const ID_TYPES = [
   'orderedList',
   'horizontalRule',
   'table',
+  'collapsibleBlock',
 ]
 
 export function blockId(): string {
@@ -156,6 +157,7 @@ export function annotatedMarkdown(doc: PMNode): string {
 
 function nodeToMarkdown(node: PMNode): string {
   switch (node.type.name) {
+    case 'collapsibleBlock':
     case 'table': {
       const container = document.createElement('div')
       container.appendChild(DOMSerializer.fromSchema(node.type.schema).serializeNode(node))

@@ -45,6 +45,9 @@ export function SavedProse({ node, nodes, access, missing }: { node: SavedSectio
       case 'blockquote': return <blockquote key={key} className="border-l-2 pl-3">{children}</blockquote>
       case 'hardBreak': return <br key={key} />
       case 'horizontalRule': return <hr key={key} />
+      case 'collapsibleBlock': return <details key={key} className="rounded border p-2">{children}</details>
+      case 'collapsibleSummary': return <summary key={key} className="cursor-pointer font-medium">{children}</summary>
+      case 'collapsibleContent': return <div key={key} className="min-w-0 space-y-2">{children}</div>
       case 'table': return <div key={key} className="max-w-full overflow-auto"><table className="w-full border-collapse"><tbody>{children}</tbody></table></div>
       case 'tableRow': return <tr key={key}>{children}</tr>
       case 'tableCell': return <td key={key} colSpan={span('colspan')} rowSpan={span('rowspan')} className="border p-2 align-top">{children}</td>

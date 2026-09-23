@@ -17,6 +17,21 @@ export const DocumentSearchHighlight = Extension.create({
         init: () => ({ query: '' }),
         apply: (transaction, state) => (transaction.getMeta(key) as DocumentSearchHighlightState | undefined) ?? state,
       },
+      view() {
+        let previous: DocumentSearchHighlightState | undefined
+        return { update(view) {
+          const search = key.getState(view.state)
+          if (search === previous) return
+          previous = search
+          // Search highlights do not move the caret. Reveal only the active
+          // match, locally, before the section owner scrolls it into view.
+          const match = view.dom.querySelector('[data-document-search-active="true"]')
+          for (let parent = match?.parentElement; parent && parent !== view.dom; parent = parent.parentElement) {
+            if (parent instanceof HTMLDetailsElement) parent.open = true
+            else if (parent.matches('[data-collapsible-block]')) parent.dispatchEvent(new Event('reveal-collapsible'))
+          }
+        } }
+      },
       props: {
         decorations(state) {
           const search = key.getState(state)

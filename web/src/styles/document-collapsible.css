@@ -1,0 +1,26 @@
+.document-collapsible {
+  position: relative;
+  margin-block: 0.75rem;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.document-collapsible-summary {
+  padding: 0.6rem 0.75rem 0.6rem 2.25rem;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+.document-collapsible-summary:focus-visible { outline: 2px solid var(--ring); }
+.document-collapsible [data-collapsible-content] { padding: 0 0.75rem 0.5rem; min-width: 0; }
+.document-collapsible-controls { padding: 0.25rem 0.75rem 0.5rem; }
+.document-collapsible-controls button { font-size: 0.75rem; color: var(--muted-foreground); cursor: pointer; }
+.document-collapsible-controls button:focus-visible { outline: 2px solid var(--ring); }
+
+
+.document-collapsible-toggle { position: absolute; top: 0.25rem; left: 0.25rem; width: 1.75rem; height: 2rem; cursor: pointer; }
+.document-collapsible-toggle:focus-visible { outline: 2px solid var(--ring); }
+.document-collapsible[data-expanded="false"] > .document-collapsible-prose > [data-collapsible-content] { display: none; }
+@media print {
+  .document-collapsible[data-expanded="false"] > .document-collapsible-prose > [data-collapsible-content] { display: block; }
+  .document-collapsible-toggle, .document-collapsible-controls { display: none; }
+}

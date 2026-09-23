@@ -285,3 +285,5 @@ export { RouteError } from './RouteError'
 export { DocumentReviewProvider, ReviewPeople } from "./documents/DocumentReview"
 
 export { ReviewInbox } from "./inbox/ReviewInbox"
+
+export { SectionReferences, type SectionReferencesProps } from './documents/SectionReferences'

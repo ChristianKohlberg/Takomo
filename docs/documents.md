@@ -275,6 +275,27 @@ cells and rich content; pipe cell text is plain text. Replacing a table remains 
 proposal and requires acceptance, just like replacing a paragraph. Cell-level proposal diffs
 and spreadsheet formulas are not provided.
 
+## Collapsible content and section references
+
+Use `/toggle` (or choose **Collapsible content block**) to insert a titled, initially
+closed content block. Its summary is editable; Enter moves from the summary into the
+body. Existing tables can be wrapped using **Table actions → Make table collapsible**.
+Opening the block exposes **Remove folding**, which unwraps its body without deleting
+the table or other content. Tables retain inline code, links, cell structure and IDs.
+The wrapper, summary and body use the section's existing Yjs fragment and undo history.
+HTML/annotated Markdown and history previews preserve the wrapper. Search includes both
+summary and body; selecting a body match opens the block. Expanding/collapsing is local
+view state, never a shared edit; a freshly mounted block starts closed, including for readers.
+
+Every section also has an initially closed **References (n)** area below its prose.
+Writers can add, edit and remove references with a kind, label, description, and URL or
+repository path. These are the existing node attachments (maximum 20), shared with the
+map view and synchronized through the same document; they are not a separate source list.
+HTTP(S) URLs open in a new tab; repository paths and unsupported URL schemes remain text.
+Reference changes participate in document undo and editing history. Readers may expand and
+follow references but cannot change them. These source references are separate from the
+inline cross-section reference chips inserted with `@`.
+
 ## Insert blocks while writing
 
 In an empty paragraph in a section, type `/` to open the block menu and keep typing to

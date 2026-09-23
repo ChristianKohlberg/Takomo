@@ -8,7 +8,7 @@ export interface TableLabels {
   tableRowBefore: string; tableRowAfter: string; tableRowDelete: string
   tableColumnBefore: string; tableColumnAfter: string; tableColumnDelete: string
   tableHeaderRow: string; tableHeaderColumn: string; tableMerge: string; tableSplit: string
-  tableDelete: string; tableHint: string
+  tableCollapse?: string; tableDelete: string; tableHint: string
 }
 
 /** Keep the editor's mapped selection while the shared menu owns DOM focus. */
@@ -55,6 +55,8 @@ export function TableToolbar({ editor, labels, disabled }: { editor: Editor; lab
           </DropdownMenuGroup>
         </Fragment>)}
         <DropdownMenuSeparator />
+        {labels.tableCollapse && <DropdownMenuItem disabled={!editor.can().wrapCollapsibleBlock()}
+          onSelect={() => { editor.chain().focus().wrapCollapsibleBlock().run() }}>{labels.tableCollapse}</DropdownMenuItem>}
         <DropdownMenuItem variant="destructive" disabled={!editor.can().deleteTable()}
           onSelect={() => { if (editor.isEditable && editor.isActive('table')) editor.chain().focus().deleteTable().run() }}>{labels.tableDelete}</DropdownMenuItem>
         <p className="text-muted-foreground px-2 py-1 text-xs">{labels.tableHint}</p>

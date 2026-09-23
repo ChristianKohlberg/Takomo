@@ -34,6 +34,13 @@ function type(editor: Editor, text: string) {
 function key(editor: Editor, key: string) { fireEvent.keyDown(editor.view.dom, { key }) }
 
 describe('slash insertion in a collaborative section', () => {
+  it('inserts a separate collapsible content block through the slash menu', () => {
+    const { editor } = mount()
+    type(editor, '/toggle'); key(editor, 'Enter')
+    expect(editor.state.doc.firstChild!.type.name).toBe('collapsibleBlock')
+    expect(editor.state.doc.firstChild!.firstChild!.textContent).toBe('Details')
+    expect(editor.view.dom.querySelector<HTMLElement>('[data-collapsible-block]')!.dataset.expanded).toBe('false')
+  })
   it('requires an authored summary before making a section collapsible', () => {
     const save = vi.fn(() => true)
     const { editor } = mount(true, vi.fn(() => true), 3, { onSetSectionSummary: save })

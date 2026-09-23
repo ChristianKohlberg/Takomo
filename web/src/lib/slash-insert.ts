@@ -3,6 +3,7 @@ import { Extension, type Editor } from '@tiptap/react'
 // component library, without importing the page's editor at runtime.
 import type {} from '@tiptap/starter-kit'
 import type {} from '@tiptap/extension-table'
+import type {} from './collapsible-block'
 import { Plugin, PluginKey, type EditorState } from '@tiptap/pm/state'
 
 export interface SlashMatch { from: number; to: number; query: string }
@@ -79,7 +80,7 @@ export function closeSlashMenu(editor: Editor) {
   editor.view.dispatch(editor.state.tr.setMeta(slashKey, { close: true }))
 }
 
-export type InsertKind = 'heading1' | 'heading2' | 'heading3' | 'bulletList' | 'orderedList' | 'quote' | 'code' | 'table' | 'mermaid' | 'plantuml' | 'd2' | 'wireframe' | 'dbml'
+export type InsertKind = 'collapsibleBlock' | 'heading1' | 'heading2' | 'heading3' | 'bulletList' | 'orderedList' | 'quote' | 'code' | 'table' | 'mermaid' | 'plantuml' | 'd2' | 'wireframe' | 'dbml'
 
 /** A stale menu may never replace somebody else's text. */
 export function insertSlashBlock(editor: Editor, match: SlashMatch, kind: InsertKind, rows = 3, cols = 3): boolean {
@@ -101,6 +102,7 @@ export function insertSlashBlock(editor: Editor, match: SlashMatch, kind: Insert
     case 'dbml': return chain.setCodeBlock({ language: 'dbml' }).insertContent('// Users and their posts\nTable users {\n  id integer [primary key]\n  name varchar\n}\n\nTable posts {\n  id integer [primary key]\n  user_id integer [ref: > users.id]\n  title varchar\n}').run()
     case 'd2': return chain.setCodeBlock({ language: 'd2' }).insertContent('User -> Takomo: Request\nTakomo -> Worker: Process').run()
     case 'wireframe': return chain.setCodeBlock({ language: 'plantuml' }).insertContent('@startsalt\n{\n  Settings\n  Server | "https://takomo.example"\n  [Connect]\n}\n@endsalt').run()
+    case 'collapsibleBlock': return chain.wrapCollapsibleBlock().run()
     case 'table': return chain.insertTable({ rows, cols, withHeaderRow: true }).run()
   }
 }

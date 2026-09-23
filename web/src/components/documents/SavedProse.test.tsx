@@ -35,3 +35,11 @@ it('renders Yjs lowercase XML tables with valid table children and resolves refe
     expect(error).not.toHaveBeenCalled()
   } finally { error.mockRestore() }
 })
+
+it('renders saved collapsible tables closed, retaining summary and safe inline code', () => {
+  const node = { id: 'source', prose_xml: '<collapsibleblock><collapsiblesummary>Permissions</collapsiblesummary><collapsiblecontent><table><tablerow><tablecell><paragraph><code>patron.update</code></paragraph></tablecell></tablerow></table></collapsiblecontent></collapsibleblock>' } as SavedSection
+  const { container } = render(<SavedProse node={node} nodes={[node]} access={{ token: '', project: 'demo' }} missing="Missing section" />)
+  expect(container.querySelector('details')?.open).toBe(false)
+  expect(container.querySelector('summary')?.textContent).toBe('Permissions')
+  expect(container.querySelector('td code')?.textContent).toBe('patron.update')
+})

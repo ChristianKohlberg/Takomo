@@ -72,7 +72,7 @@ export function markdownToNodes(schema: Schema, markdown: string): PMNode[] {
     const block = chunk.trim()
     if (!block) continue
 
-    if (/^<table[\s>]/i.test(block) && schema.nodes.table) {
+    if ((/^<table[\s>]/i.test(block) && schema.nodes.table) || (/^<details[\s>]/i.test(block) && schema.nodes.collapsibleBlock)) {
       const html = new window.DOMParser().parseFromString(block, 'text/html')
       const parsed = DOMParser.fromSchema(schema).parse(html.body)
       parsed.forEach((node) => out.push(node))
@@ -156,7 +156,7 @@ function proposalChunks(markdown: string): string[] {
       lines.push(line); fenced = false; flush(); continue
     }
     if (!fenced) {
-      for (const tag of line.matchAll(/<(\/?)table(?:\s[^>]*|)>/gi)) tableDepth += tag[1] ? -1 : 1
+      for (const tag of line.matchAll(/<(\/?)(?:table|details)(?:\s[^>]*|)>/gi)) tableDepth += tag[1] ? -1 : 1
       tableDepth = Math.max(0, tableDepth)
     }
     if (!line.trim() && !fenced && !tableDepth) flush()

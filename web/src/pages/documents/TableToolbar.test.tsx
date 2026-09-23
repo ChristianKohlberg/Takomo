@@ -75,6 +75,16 @@ describe('contextual table actions', () => {
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Elsewhere' }))
   })
+  it('wraps an existing table from its menu without losing cells', () => {
+    const editor = mount(); table(editor); open()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Make table collapsible' }))
+    expect(editor.state.doc.firstChild!.type.name).toBe('collapsibleBlock')
+    const nestedTable = editor.state.doc.firstChild!.child(1).firstChild!
+    expect(nestedTable.type.name).toBe('table')
+    expect(TableMap.get(nestedTable).width).toBe(2)
+    expect(nestedTable.childCount).toBe(2)
+    expect(editor.view.dom.querySelector<HTMLElement>('[data-collapsible-block]')!.dataset.expanded).toBe('false')
+  })
   it('deleting a table removes the contextual controls, and read-only has none', () => {
     const editor = mount(); table(editor); open()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete table' }))
