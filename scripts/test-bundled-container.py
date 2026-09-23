@@ -116,9 +116,13 @@ def main():
     for page in ("board", "epics", "lanes", "inbox", "initiatives", "schedules", "verification", "environments"):
         status, body = request(base, "/" + page)
         assert status == 200 and 'id="root"' in body, f"/{page} did not serve the web build"
-    for asset in ("app.js", "vendor.js", "runtime.js", "app.css"):
-        status, body = request(base, "/assets/" + asset)
-        assert status == 200 and body, f"/assets/{asset} did not serve"
+    # Asset names are content-hashed, so take them from the shell that links them.
+    _, shell = request(base, "/board")
+    for stem, ext in (("app", "js"), ("vendor", "js"), ("runtime", "js"), ("app", "css")):
+        found = re.search(rf'"(/assets/{stem}-[\w-]+\.{ext})"', shell)
+        assert found, f"the shell links no {stem}-*.{ext}"
+        status, body = request(base, found.group(1))
+        assert status == 200 and body, f"{found.group(1)} did not serve"
     reader = mint(name, "read")
     assert request(base, "/v1/diagrams/render", body={})[0] == 401
     status, _ = request(base, "/v1/diagrams/render", reader,
