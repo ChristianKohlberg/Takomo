@@ -24,6 +24,8 @@ export interface ViewSwitcherLabels {
 export interface ViewSwitcherProps {
   current: SpecView
   labels: ViewSwitcherLabels
+  /** Shorter names for phones, where three full labels wrap onto two lines. */
+  shortLabels?: Partial<ViewSwitcherLabels>
   /** Same-document navigation, so switching view does not reload the app. */
   onNavigate: (href: string) => void
 }
@@ -34,7 +36,7 @@ const VIEWS: { id: SpecView; href: string; Icon: typeof NetworkIcon }[] = [
   { id: 'tests', href: '/verification', Icon: ShieldCheckIcon },
 ]
 
-export function ViewSwitcher({ current, labels, onNavigate }: ViewSwitcherProps) {
+export function ViewSwitcher({ current, labels, shortLabels, onNavigate }: ViewSwitcherProps) {
   const location = useLocation()
   const project =
     specificationProject(location.pathname) ??
@@ -63,14 +65,21 @@ export function ViewSwitcher({ current, labels, onNavigate }: ViewSwitcherProps)
               onNavigate(target)
             }}
             className={[
-              'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-center text-[13px] leading-tight font-[650] no-underline md:flex-none',
+              'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-center text-[13px] leading-tight font-[650] whitespace-nowrap no-underline md:flex-none md:py-2',
               active
                 ? 'bg-card text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',
             ].join(' ')}
           >
-            <Icon className="hidden size-4 flex-none sm:block" aria-hidden="true" />
-            <span>{labels[id]}</span>
+            <Icon className="size-4 flex-none" aria-hidden="true" />
+            {shortLabels?.[id] ? (
+              <>
+                <span className="sm:hidden">{shortLabels[id]}</span>
+                <span className="hidden sm:inline">{labels[id]}</span>
+              </>
+            ) : (
+              <span>{labels[id]}</span>
+            )}
           </a>
         )
       })}

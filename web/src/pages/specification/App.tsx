@@ -57,6 +57,7 @@ const words = {
     failed: 'The specification could not be opened.',
     retry: 'Try again',
     tests: 'Section tests',
+    testsShort: 'Tests',
     choose: 'Choose a project to open its specification.',
   },
   de: {
@@ -68,6 +69,7 @@ const words = {
     failed: 'Die Spezifikation konnte nicht geöffnet werden.',
     retry: 'Erneut versuchen',
     tests: 'Abschnittstests',
+    testsShort: 'Tests',
     choose: 'Wähle ein Projekt, um seine Spezifikation zu öffnen.',
   },
 }
@@ -313,7 +315,7 @@ function SpecificationWorkspace({
   const openBehavior = useCallback((id: string | null) => changeQuery({ behavior: id }), [changeQuery])
   const testsFor = useCallback((id: string) => {
     const counts = verification?.sections[id]
-    return { total: counts?.total ?? 0, failing: counts?.failing ?? 0 }
+    return { total: counts?.total ?? 0, failing: counts?.failing ?? 0, verified: counts?.verified ?? 0 }
   }, [verification])
   const selected = nodes.find((node) => node.id === section)
   const context = useMemo(
@@ -453,6 +455,7 @@ function SpecificationWorkspace({
               <ViewSwitcher
                 current={view}
                 labels={{ document: t.viewDocument, map: t.viewMap, tests: t.viewTests }}
+                shortLabels={{ tests: w.testsShort }}
                 onNavigate={navigate}
               />
             }

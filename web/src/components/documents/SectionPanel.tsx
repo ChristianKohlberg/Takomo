@@ -113,6 +113,8 @@ export interface SectionPanelProps {
   canWrite: boolean
   /** Highlighted because the rail points at it. */
   onShowTests?: () => void
+  /** Always-visible verification line under the heading; absent when no behavior names this section. */
+  testsStatus?: ReactNode
   testsLabel?: string
   failingTests?: boolean
   onActivate?: () => void
@@ -169,7 +171,7 @@ export function SectionPanel({
   canWrite,
   active: _active = false,
   onActivate,
-  onShowTests,
+  testsStatus, onShowTests,
   testsLabel,
   failingTests,
   historyLimit = 6,
@@ -317,6 +319,7 @@ export function SectionPanel({
         </button>
       </div>
 
+      {testsStatus}
       {collapsed && summary}
       <div id={contentId} hidden={collapsed}>
       {!collapsed && <>

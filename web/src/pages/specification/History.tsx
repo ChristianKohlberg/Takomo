@@ -267,10 +267,13 @@ export default function History() {
       <Button
         variant="ghost"
         size="sm"
+        aria-label={w.title}
+        title={w.title}
         onClick={() => change({ history: '1', panel: null, behavior: null })}
       >
-        <HistoryIcon className="size-4" />
-        {w.title}
+        <HistoryIcon className="size-4" aria-hidden="true" />
+        {/* Icon only on phones, where the header row is shared with the title. */}
+        <span className="hidden sm:inline">{w.title}</span>
       </Button>
       <Sheet
         open={open}

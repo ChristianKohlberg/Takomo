@@ -77,6 +77,25 @@ function stubPaneWidth(width: number) {
 }
 
 describe('document workflow integration', () => {
+  it('shows each section\'s verification under its heading and opens the Tests view on it', () => {
+    const { a, child, props } = setup()
+    const onShowTests = vi.fn()
+    render(
+      <Plan
+        {...props}
+        onShowTests={onShowTests}
+        testsFor={(id) =>
+          id === a ? { total: 3, failing: 1, verified: 1 } : id === child ? { total: 2, failing: 0, verified: 2 } : { total: 0, failing: 0, verified: 0 }
+        }
+      />,
+    )
+    // A section that no behavior names carries no line at all.
+    expect(screen.getAllByRole('button', { name: /^Tests: / })).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Tests: 1/3 verified, 1 failed' }))
+    expect(onShowTests).toHaveBeenCalledWith(a)
+    expect(screen.getByRole('button', { name: 'Tests: 2/2 verified' })).toBeTruthy()
+  })
+
   it('keeps ordinary sections expanded even with old fold preferences', () => {
     const { doc, a, child, b, props } = setup()
     for (const id of [a, child, b]) removeSectionSummary(doc, id)
