@@ -550,6 +550,11 @@ impl TestApp {
             rusqlite::params![run, when],
         )
         .expect("backdate results");
+        conn.execute(
+            "UPDATE verification_latest SET at = ?2 WHERE run = ?1",
+            rusqlite::params![run, when],
+        )
+        .expect("backdate latest results");
     }
 
     // --- schedules -----------------------------------------------------------

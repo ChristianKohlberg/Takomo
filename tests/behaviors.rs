@@ -435,4 +435,98 @@ async fn scope_project_and_archive_guards_hold() {
         )
         .await;
     assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    // The archive answers before the section is looked up, with or without one.
+    let (s, b) = app
+        .post(
+            &app.worker,
+            "/v1/projects/tp/behaviors",
+            json!({ "title": "no", "section": "mn-nosuch" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    let (s, b) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/behaviors/{id}"),
+            json!({ "section": "mn-nosuch" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+}
+
+/// Edge cases the review round found: an empty filter, an empty patch, a
+/// header that is not ASCII, and history that spans many runs.
+#[tokio::test]
+async fn edges_behave() {
+    let app = TestApp::spawn().await;
+    let sec = section(&app).await;
+    let a = behavior(
+        &app,
+        json!({ "title": "In a section", "section": sec, "tests": ["k1", "k2"] }),
+    )
+    .await;
+    behavior(&app, json!({ "title": "Nowhere" })).await;
+
+    // `?section=` with no value is no filter; `none` is the unsectioned ones.
+    let (_, all) = app
+        .get(&app.worker, "/v1/projects/tp/behaviors?section=")
+        .await;
+    assert_eq!(all["total"], 2, "{all}");
+    let (_, none) = app
+        .get(&app.worker, "/v1/projects/tp/behaviors?section=none")
+        .await;
+    assert_eq!(none["total"], 1, "{none}");
+
+    // An empty patch changes nothing, not even `updated_at`.
+    let id = a["id"].as_str().unwrap();
+    let (s, same) = app
+        .patch(&app.worker, &format!("/v1/behaviors/{id}"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{same}");
+    assert_eq!(same["updated_at"], a["updated_at"]);
+
+    // A key that is not ASCII is refused, not silently dropped.
+    let resp = app
+        .authed(reqwest::Method::POST, &app.worker, "/v1/projects/tp/runs")
+        .header(
+            "Idempotency-Key",
+            reqwest::header::HeaderValue::from_bytes(b"caf\xe9").unwrap(),
+        )
+        .json(&json!({ "results": [{ "test": "k1", "outcome": "pass" }] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["code"], "validation.idempotency_key", "{body}");
+
+    // History merges the linked keys newest first, capped at 50.
+    for i in 0..30 {
+        report(
+            &app,
+            json!({ "commit": format!("c{i}"), "results": [
+                { "test": "k1", "outcome": "pass" },
+                { "test": "k2", "outcome": if i == 29 { "fail" } else { "pass" } },
+            ] }),
+        )
+        .await;
+    }
+    let (_, d) = app.get(&app.worker, &format!("/v1/behaviors/{id}")).await;
+    let history = d["history"].as_array().unwrap();
+    assert_eq!(history.len(), 50);
+    assert_eq!(history[0]["commit"], "c29", "{d}");
+    assert_eq!(d["status"], "failing");
+    let (_, s) = app.get(&app.worker, "/v1/projects/tp/verification").await;
+    assert_eq!(s["summary"]["failing"], 1, "{s}");
+    assert_eq!(s["latest_run"]["commit"], "c29", "{s}");
+
+    // A database from before `verification_latest` fills it on open.
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    conn.execute("DELETE FROM verification_latest", []).unwrap();
+    drop(app.open_store());
+    let (_, d) = app.get(&app.worker, &format!("/v1/behaviors/{id}")).await;
+    assert_eq!(d["status"], "failing", "{d}");
+    assert_eq!(d["last_result"]["test"], "k2", "{d}");
 }

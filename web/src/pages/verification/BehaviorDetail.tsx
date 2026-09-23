@@ -86,7 +86,7 @@ export function BehaviorDetail({
     }
   }, [load, version])
 
-  const save = async (fields: Parameters<typeof patchBehavior>[2]) => {
+  const save = async (fields: Parameters<typeof patchBehavior>[2]): Promise<boolean> => {
     setBusy(true)
     setMessage('')
     try {
@@ -94,8 +94,10 @@ export function BehaviorDetail({
       await load()
       setMessage(t.saved)
       onChanged()
+      return true
     } catch (error) {
       onError(error)
+      return false
     } finally {
       setBusy(false)
     }
@@ -118,8 +120,10 @@ export function BehaviorDetail({
   const addTest = () => {
     const key = newTest.trim()
     if (!key || detail.tests.includes(key)) return
-    setNewTest('')
-    void save({ tests: [...detail.tests, key] })
+    // Clear the field only once the key is saved, so a failed save keeps it.
+    void save({ tests: [...detail.tests, key] }).then((saved) => {
+      if (saved) setNewTest('')
+    })
   }
 
   return (

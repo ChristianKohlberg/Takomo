@@ -722,6 +722,28 @@ fn drop_checklist(conn: &Connection) -> ApiResult<()> {
 }
 
 fn migrate(conn: &Connection) -> ApiResult<()> {
+    // `verification_latest` arrived after the first results were reported;
+    // fill it once from the history, picking a fail over a pass on a tie. The
+    // emptiness check keeps every later startup from scanning the history.
+    let needs_backfill: bool = conn.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM verification_latest)
+            AND EXISTS (SELECT 1 FROM verification_results)",
+        [],
+        |r| r.get(0),
+    )?;
+    if needs_backfill {
+        conn.execute(
+            "INSERT INTO verification_latest (project, test_key, run, outcome, detail, at)
+             SELECT project, test_key, run, outcome, detail, at FROM (
+               SELECT *, ROW_NUMBER() OVER (
+                 PARTITION BY project, test_key
+                 ORDER BY at DESC, CASE outcome WHEN 'fail' THEN 0 ELSE 1 END) AS n
+               FROM verification_results)
+             WHERE n = 1",
+            [],
+        )?;
+    }
+
     // archived_at (nullable) separates archived tickets from active ones. Older
     // databases predate the column; add it only when PRAGMA table_info shows it
     // absent. `CREATE TABLE IF NOT EXISTS` above already carries it for a fresh
@@ -1805,6 +1827,20 @@ CREATE TABLE IF NOT EXISTS verification_results (
   PRIMARY KEY (run, test_key)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_verification_results_key ON verification_results(project, test_key, at);
+
+-- The latest result per key, kept by `report_run` in the same transaction, so
+-- status reads touch one row per key instead of the whole history. A newer
+-- result replaces the row; at the same millisecond a fail is never replaced by
+-- a pass.
+CREATE TABLE IF NOT EXISTS verification_latest (
+  project  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  test_key TEXT NOT NULL,
+  run      TEXT NOT NULL,
+  outcome  TEXT NOT NULL,
+  detail   TEXT,
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (project, test_key)
+) WITHOUT ROWID;
 
 -- Where a check can actually be run: a named, project-scoped environment.
 --

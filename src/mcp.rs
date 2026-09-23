@@ -1733,14 +1733,21 @@ impl TakomoMcp {
         let result = async {
             auth.require_scope("write")?;
             auth.require_project(&a.project)?;
-            if let Some(section) = a.section.as_deref().filter(|s| !s.is_empty()) {
+            let section = a
+                .section
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if let Some(section) = &section {
+                self.state
+                    .store
+                    .precheck_behavior_write(&a.project, Some(&a.title))?;
                 crate::api::behaviors::validate_section(&self.state, &a.project, section).await?;
             }
             let req = crate::store::BehaviorCreate {
                 project: a.project,
                 title: a.title,
                 statement: a.statement.unwrap_or_default(),
-                section: a.section.filter(|s| !s.is_empty()),
+                section,
                 tests: a.tests.unwrap_or_default(),
             };
             let b = self.state.store.create_behavior(&req, &auth.actor)?;
@@ -1768,14 +1775,22 @@ impl TakomoMcp {
             auth.require_scope("write")?;
             let existing = self.state.store.get_behavior(&a.id)?;
             auth.require_project(&existing.project)?;
-            if let Some(section) = a.section.as_deref().filter(|s| !s.is_empty()) {
+            // "" (or blanks) unlinks, as `null` does over REST.
+            let section = a.section.map(|s| {
+                let s = s.trim().to_string();
+                (!s.is_empty()).then_some(s)
+            });
+            if let Some(Some(section)) = &section {
+                self.state
+                    .store
+                    .precheck_behavior_write(&existing.project, None)?;
                 crate::api::behaviors::validate_section(&self.state, &existing.project, section)
                     .await?;
             }
             let patch = crate::store::BehaviorPatch {
                 title: a.title,
                 statement: a.statement,
-                section: a.section.map(|s| if s.is_empty() { None } else { Some(s) }),
+                section,
                 tests: a.tests,
             };
             let b = self

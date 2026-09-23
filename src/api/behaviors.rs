@@ -28,7 +28,6 @@ const CREATE_FIELDS: [&str; 4] = ["title", "statement", "section", "tests"];
 const PATCH_FIELDS: [&str; 4] = ["title", "statement", "section", "tests"];
 const RUN_FIELDS: [&str; 3] = ["commit", "note", "results"];
 const RESULT_FIELDS: [&str; 3] = ["test", "outcome", "detail"];
-const MAX_IDEMPOTENCY_HEADER: usize = 128;
 
 /// The section must be a node of this project's plan.
 ///
@@ -73,23 +72,22 @@ fn nullable_str(obj: &Map<String, Value>, key: &str) -> ApiResult<Option<Option<
     }
 }
 
+/// The header, if present. Its length is the store's to check, so REST and
+/// MCP share one limit; a header that is not visible ASCII is refused rather
+/// than ignored, since ignoring it would record a retry twice.
 fn idempotency_key(headers: &HeaderMap) -> ApiResult<Option<String>> {
-    let key = headers
-        .get("Idempotency-Key")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|k| !k.is_empty())
-        .map(str::to_string);
-    if key
-        .as_ref()
-        .is_some_and(|k| k.len() > MAX_IDEMPOTENCY_HEADER)
-    {
-        return Err(ApiError::bad_request(
+    let Some(raw) = headers.get("Idempotency-Key") else {
+        return Ok(None);
+    };
+    let key = raw.to_str().map_err(|_| {
+        ApiError::validation(
             "validation.idempotency_key",
-            "Idempotency-Key must be at most 128 characters.",
-        ));
-    }
-    Ok(key)
+            "The Idempotency-Key header must be printable ASCII.",
+        )
+        .remedy("Use a key such as ci-<run id> or a UUID.".to_string())
+    })?;
+    let key = key.trim();
+    Ok((!key.is_empty()).then(|| key.to_string()))
 }
 
 /// POST /v1/projects/{project}/behaviors (write).
@@ -103,13 +101,17 @@ pub async fn create(
     ctx.require_project(&project)?;
     let obj = body_object(&body)?;
     reject_unknown(obj, &CREATE_FIELDS)?;
+    let title = require_str(obj, "title")?;
     let section = nullable_str(obj, "section")?.flatten();
     if let Some(s) = &section {
+        state
+            .store
+            .precheck_behavior_write(&project, Some(&title))?;
         validate_section(&state, &project, s).await?;
     }
     let req = BehaviorCreate {
         project,
-        title: require_str(obj, "title")?,
+        title,
         statement: get_str(obj, "statement")?.unwrap_or_default(),
         section,
         tests: get_string_array(obj, "tests")?.unwrap_or_default(),
@@ -134,7 +136,8 @@ pub async fn list(
     let pairs = query_pairs(raw.as_deref());
     let filter = BehaviorFilter {
         project,
-        section: first(&pairs, "section").map(|s| {
+        // An empty `?section=` is no filter; only `none` means unsectioned.
+        section: first(&pairs, "section").filter(|s| !s.is_empty()).map(|s| {
             if s == "none" {
                 String::new()
             } else {
@@ -188,6 +191,9 @@ pub async fn patch(
     reject_unknown(obj, &PATCH_FIELDS)?;
     let section = nullable_str(obj, "section")?;
     if let Some(Some(s)) = &section {
+        state
+            .store
+            .precheck_behavior_write(&existing.project, None)?;
         validate_section(&state, &existing.project, s).await?;
     }
     let patch = BehaviorPatch {

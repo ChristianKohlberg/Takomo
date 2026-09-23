@@ -46,7 +46,7 @@ const MAX_TEST_KEY: usize = 500;
 const MAX_DETAIL: usize = 4_000;
 const MAX_NOTE: usize = 4_000;
 const MAX_COMMIT: usize = 100;
-const MAX_IDEMPOTENCY_KEY: usize = 200;
+const MAX_IDEMPOTENCY_KEY: usize = 128;
 const HISTORY_LIMIT: i64 = 50;
 const UNLINKED_LIMIT: i64 = 50;
 
@@ -349,34 +349,53 @@ fn row_to_latest(row: &Row) -> rusqlite::Result<Latest> {
     })
 }
 
+const LATEST_COLS: &str =
+    "r.test_key, r.outcome, r.detail, r.at, v.\"commit\" AS \"commit\", r.run, v.actor
+     FROM verification_latest r JOIN verification_runs v ON v.id = r.run";
+
 /// The latest result of every key in `project` that satisfies `key_filter`
-/// (an SQL predicate over `r.test_key`). Two results at the same millisecond
-/// resolve to the fail, so a tie can never hide one.
+/// (an SQL predicate over `r.test_key`), from `verification_latest`: one row
+/// per key, whatever the length of the history.
 fn latest_results(
     conn: &Connection,
     project: &str,
     key_filter: &str,
 ) -> ApiResult<HashMap<String, Latest>> {
-    let sql = format!(
-        "SELECT r.test_key, r.outcome, r.detail, r.at, v.\"commit\" AS \"commit\", r.run, v.actor
-         FROM verification_results r JOIN verification_runs v ON v.id = r.run
-         WHERE r.project = ?1 AND {key_filter}
-           AND r.at = (SELECT MAX(x.at) FROM verification_results x
-                       WHERE x.project = r.project AND x.test_key = r.test_key)"
-    );
+    let sql = format!("SELECT {LATEST_COLS} WHERE r.project = ?1 AND {key_filter}");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![project], row_to_latest)?;
-    let mut out: HashMap<String, Latest> = HashMap::new();
+    let mut out = HashMap::new();
     for row in rows {
         let l = row?;
-        match out.get(&l.test) {
-            Some(prev) if prev.outcome == "fail" => {}
-            _ => {
-                out.insert(l.test.clone(), l);
-            }
-        }
+        out.insert(l.test.clone(), l);
     }
     Ok(out)
+}
+
+/// Record `outcome` as the latest result for `key` unless a newer one exists.
+/// At the same millisecond the later write wins, except that a pass never
+/// replaces a fail, so a tie can never hide one.
+pub(crate) fn upsert_latest(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    run: &str,
+    outcome: &str,
+    detail: Option<&str>,
+    at: i64,
+) -> ApiResult<()> {
+    conn.execute(
+        "INSERT INTO verification_latest (project, test_key, run, outcome, detail, at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (project, test_key) DO UPDATE SET
+           run = excluded.run, outcome = excluded.outcome,
+           detail = excluded.detail, at = excluded.at
+         WHERE excluded.at > verification_latest.at
+            OR (excluded.at = verification_latest.at
+                AND (excluded.outcome = 'fail' OR verification_latest.outcome = 'pass'))",
+        params![project, key, run, outcome, detail, at],
+    )?;
+    Ok(())
 }
 
 /// Every behavior of a project with its tests and computed status.
@@ -441,12 +460,9 @@ fn latest_for_keys(
     keys: &[String],
 ) -> ApiResult<HashMap<String, Latest>> {
     let mut out = HashMap::new();
-    let mut stmt = conn.prepare(
-        "SELECT r.test_key, r.outcome, r.detail, r.at, v.\"commit\" AS \"commit\", r.run, v.actor
-         FROM verification_results r JOIN verification_runs v ON v.id = r.run
-         WHERE r.project = ?1 AND r.test_key = ?2
-         ORDER BY r.at DESC, CASE r.outcome WHEN 'fail' THEN 0 ELSE 1 END LIMIT 1",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {LATEST_COLS} WHERE r.project = ?1 AND r.test_key = ?2"
+    ))?;
     for k in keys {
         if let Some(l) = stmt
             .query_row(params![project, k], row_to_latest)
@@ -522,6 +538,19 @@ fn row_to_run_json(r: &Row) -> rusqlite::Result<Value> {
 // ---------------------------------------------------------------------------
 
 impl Store {
+    /// The cheap checks a write would fail anyway — the title, and that the
+    /// project exists and is writable — so a caller can run them before
+    /// validating a section, which has to open the plan document.
+    pub fn precheck_behavior_write(&self, project: &str, title: Option<&str>) -> ApiResult<()> {
+        if let Some(t) = title {
+            validate_title(t)?;
+        }
+        self.with_conn(|conn| {
+            project_exists(conn, project)?;
+            ensure_project_writable(conn, project)
+        })
+    }
+
     pub fn create_behavior(&self, req: &BehaviorCreate, actor: &str) -> ApiResult<Behavior> {
         let title = validate_title(&req.title)?;
         validate_statement(&req.statement)?;
@@ -574,28 +603,47 @@ impl Store {
                 .iter()
                 .map(|k| json!({ "test": k, "latest": latest.get(k).map(Latest::to_json) }))
                 .collect::<Vec<_>>());
+            // Per key, newest first, each an index range bounded by the limit;
+            // one query over all keys would sort every result they ever had.
             let mut stmt = conn.prepare(
-                "SELECT r.test_key, r.outcome, r.detail, r.at, v.\"commit\", r.run, v.note, v.actor
+                "SELECT r.test_key, r.outcome, r.detail, r.at, v.\"commit\", r.run, v.note, v.actor,
+                    v.rowid
                  FROM verification_results r JOIN verification_runs v ON v.id = r.run
-                 WHERE r.project = ?1
-                   AND r.test_key IN (SELECT test_key FROM behavior_tests WHERE behavior = ?2)
-                 ORDER BY r.at DESC, r.test_key LIMIT ?3",
+                 WHERE r.project = ?1 AND r.test_key = ?2
+                 ORDER BY r.at DESC, v.rowid DESC LIMIT ?3",
             )?;
-            let history = stmt
-                .query_map(params![b.project, b.id, HISTORY_LIMIT], |r| {
-                    Ok(json!({
-                        "test": r.get::<_, String>(0)?,
-                        "outcome": r.get::<_, String>(1)?,
-                        "detail": r.get::<_, Option<String>>(2)?,
-                        "at": iso(r.get::<_, i64>(3)?),
-                        "commit": r.get::<_, Option<String>>(4)?,
-                        "run": r.get::<_, String>(5)?,
-                        "note": r.get::<_, Option<String>>(6)?,
-                        "actor": r.get::<_, String>(7)?,
-                    }))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            out["history"] = json!(history);
+            // (at, run insertion order, key, entry): the run's rowid breaks
+            // ties within one millisecond in the order runs were reported.
+            let mut history: Vec<(i64, i64, String, Value)> = Vec::new();
+            for k in &b.tests {
+                for row in stmt.query_map(params![b.project, k, HISTORY_LIMIT], |r| {
+                    let at = r.get::<_, i64>(3)?;
+                    Ok((
+                        at,
+                        r.get::<_, i64>(8)?,
+                        k.clone(),
+                        json!({
+                            "test": r.get::<_, String>(0)?,
+                            "outcome": r.get::<_, String>(1)?,
+                            "detail": r.get::<_, Option<String>>(2)?,
+                            "at": iso(at),
+                            "commit": r.get::<_, Option<String>>(4)?,
+                            "run": r.get::<_, String>(5)?,
+                            "note": r.get::<_, Option<String>>(6)?,
+                            "actor": r.get::<_, String>(7)?,
+                        }),
+                    ))
+                })? {
+                    history.push(row?);
+                }
+            }
+            history.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| b.1.cmp(&a.1))
+                    .then_with(|| a.2.cmp(&b.2))
+            });
+            history.truncate(HISTORY_LIMIT as usize);
+            out["history"] = json!(history.into_iter().map(|h| h.3).collect::<Vec<_>>());
             Ok(out)
         })
     }
@@ -653,6 +701,14 @@ impl Store {
         self.with_tx(|tx| {
             let project = project_of(tx, id)?;
             ensure_project_writable(tx, &project)?;
+            if title.is_none()
+                && patch.statement.is_none()
+                && patch.section.is_none()
+                && tests.is_none()
+            {
+                // Nothing to change: no new `updated_at`, no event.
+                return load_one(tx, id);
+            }
             if let Some(t) = &title {
                 tx.execute(
                     "UPDATE behaviors SET title = ?2 WHERE id = ?1",
@@ -828,6 +884,7 @@ impl Store {
             )?;
             for (key, outcome, detail) in &results {
                 stmt.execute(params![id, req.project, key, outcome, detail, now])?;
+                upsert_latest(tx, &req.project, key, &id, outcome, detail.as_deref(), now)?;
             }
             drop(stmt);
             let out = report_outcome(tx, &req.project, &id)?;
@@ -869,7 +926,7 @@ impl Store {
                     (SELECT COUNT(*) FROM verification_results r WHERE r.run = v.id AND r.outcome = 'pass'),
                     (SELECT COUNT(*) FROM verification_results r WHERE r.run = v.id AND r.outcome = 'fail')
                  FROM verification_runs v WHERE v.project = ?1
-                 ORDER BY v.at DESC, v.id DESC LIMIT ?2 OFFSET ?3",
+                 ORDER BY v.at DESC, v.rowid DESC LIMIT ?2 OFFSET ?3",
             )?;
             let runs = stmt
                 .query_map(params![project, limit, offset], row_to_run_json)?
@@ -917,7 +974,7 @@ impl Store {
             let latest_run: Option<String> = conn
                 .query_row(
                     "SELECT id FROM verification_runs WHERE project = ?1
-                     ORDER BY at DESC, id DESC LIMIT 1",
+                     ORDER BY at DESC, rowid DESC LIMIT 1",
                     params![project],
                     |r| r.get(0),
                 )
@@ -973,6 +1030,49 @@ fn report_outcome(conn: &Connection, project: &str, run: &str) -> ApiResult<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Newer wins; at the same millisecond a pass never replaces a fail, and
+    /// otherwise the later write wins.
+    #[test]
+    fn latest_upsert_orders_by_time_and_never_hides_a_fail() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE verification_latest (project TEXT, test_key TEXT, run TEXT,
+               outcome TEXT, detail TEXT, at INTEGER, PRIMARY KEY (project, test_key));",
+        )
+        .unwrap();
+        let read = |conn: &Connection| -> (String, String) {
+            conn.query_row(
+                "SELECT run, outcome FROM verification_latest WHERE test_key = 'k'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        upsert_latest(&conn, "p", "k", "r1", "pass", None, 10).unwrap();
+        upsert_latest(&conn, "p", "k", "r0", "fail", None, 5).unwrap();
+        assert_eq!(read(&conn), ("r1".into(), "pass".into()), "older loses");
+        upsert_latest(&conn, "p", "k", "r2", "fail", None, 10).unwrap();
+        assert_eq!(
+            read(&conn),
+            ("r2".into(), "fail".into()),
+            "a tied fail wins"
+        );
+        upsert_latest(&conn, "p", "k", "r3", "pass", None, 10).unwrap();
+        assert_eq!(
+            read(&conn),
+            ("r2".into(), "fail".into()),
+            "a tied pass cannot hide it"
+        );
+        upsert_latest(&conn, "p", "k", "r4", "fail", Some("again"), 10).unwrap();
+        assert_eq!(
+            read(&conn),
+            ("r4".into(), "fail".into()),
+            "a later tied fail replaces"
+        );
+        upsert_latest(&conn, "p", "k", "r5", "pass", None, 11).unwrap();
+        assert_eq!(read(&conn), ("r5".into(), "pass".into()), "newer wins");
+    }
 
     fn latest(outcome: &str, at: i64) -> Latest {
         Latest {

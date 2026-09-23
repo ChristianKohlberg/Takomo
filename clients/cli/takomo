@@ -2293,7 +2293,7 @@ cmd_behavior_new() {
     fi
   fi
   local data
-  data=$(TS_TITLE="$title" TS_STMT="$statement" TS_SECTION="$section" python3 - "${tests[@]}" <<'PY'
+  data=$(TS_TITLE="$title" TS_STMT="$statement" TS_SECTION="$section" python3 - ${tests[@]+"${tests[@]}"} <<'PY'
 import json, os, sys
 d = {"title": os.environ["TS_TITLE"]}
 if os.environ.get("TS_STMT"): d["statement"] = os.environ["TS_STMT"]
@@ -2432,6 +2432,10 @@ for b in todo:
     l = b.get("last_result") or {}
     when = f"  last {l.get('outcome')} {(l.get('commit') or '')[:8]} {l.get('at','')[:10]}" if l else ""
     print(f"{b['status']:<9} {b['id']:<13} {b['title']}{when}")
+shown = len(d.get("items") or [])
+if d.get("total", shown) > shown:
+    print(f"(listed from the first {shown} of {d['total']} behaviors — "
+          "narrow with: takomo behavior ls --status failing|stale|untested)")
 u = s.get("unlinked_tests") or {}
 if u.get("total"):
     print(f"\n{u['total']} reported test(s) no behavior links:")
@@ -2470,13 +2474,14 @@ cmd_report() {
     die "report: usage: takomo report [--commit SHA] [--note N] (--pass KEY | --fail KEY [--detail D])... | --file F|-"
   # The python below reads its program from stdin, so piped results are
   # buffered to a file first.
+  local tmpfile=""
   if [ "$file" = "-" ]; then
-    file=$(mktemp); cat > "$file"
+    tmpfile=$(mktemp); cat > "$tmpfile"; file=$tmpfile
   fi
   [ -n "$commit" ] || commit=$(git rev-parse --short HEAD 2>/dev/null || true)
   [ -n "$key" ] || key="cli-$(python3 -c 'import uuid; print(uuid.uuid4())')"
   local data
-  data=$(TS_COMMIT="$commit" TS_NOTE="$note" TS_FILE="$file" python3 - "${results[@]}" <<'PY'
+  data=$(TS_COMMIT="$commit" TS_NOTE="$note" TS_FILE="$file" python3 - ${results[@]+"${results[@]}"} <<'PY'
 import json, os, sys
 results = []
 f = os.environ.get("TS_FILE")
@@ -2495,6 +2500,7 @@ if os.environ.get("TS_NOTE"): d["note"] = os.environ["TS_NOTE"]
 print(json.dumps(d))
 PY
 )
+  [ -z "$tmpfile" ] || rm -f "$tmpfile"
   api POST "/v1/projects/$(urlenc "$project")/runs" "$data" "Idempotency-Key: $key" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys

@@ -29,10 +29,11 @@ import { STR } from './strings'
 const EMPTY_COUNTS: StatusCounts = { total: 0, verified: 0, failing: 0, stale: 0, untested: 0 }
 
 export function TestsView({ compact = false }: { compact?: boolean }) {
-  const { token, lang, project, scopes, nodes, verification, refreshVerification, openBehavior, onError } =
+  const { token, lang, project, projects, scopes, nodes, verification, refreshVerification, openBehavior, onError } =
     useSpecification()
   const t = pick(STR, lang)
-  const canWrite = scopes.includes('write')
+  // An archived project refuses behavior writes, so offer none.
+  const canWrite = scopes.includes('write') && projects.find((p) => p.id === project)?.archived !== true
   const [params] = useSearchParams()
   const selected = params.get('behavior')
   const [section, setSection] = useWorkspaceSection()

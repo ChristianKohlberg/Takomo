@@ -12,7 +12,7 @@ record so the context survives the session.
 > now called a **check**: `lane` already meant "the initiative a feature is worked in" on the
 > roadmap, and one product cannot carry two lanes. The original prose stands as written, because
 > this is the record of a conversation rather than current documentation — read `lane` here as
-> `check`. `docs/checklist.md` is the current documentation.
+> `check`. The checklist itself has since been replaced; `docs/verification.md` is the current documentation.
 
 The design was driven by a real application under test, but that application is a client system
 and its specifics are deliberately **not** in this repo — Takomo is public. The worked example

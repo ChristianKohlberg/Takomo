@@ -8017,8 +8017,8 @@ paths:
       description: |
         Every section of the project's plan as `{id, mindmap, title, parent}`.
 
-        What resolves a check's `node` into the name of the thing it verifies,
-        and what fills the picker when somebody files a check against a section.
+        What resolves a behavior's `section` into the section's title, and
+        what fills the picker when somebody ties a behavior to a section.
         A plan caps at 500 sections, so this is one call rather than a page.
       parameters: [ { $ref: "#/components/parameters/project" } ]
       responses:

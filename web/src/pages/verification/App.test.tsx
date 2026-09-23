@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   openBehavior: vi.fn(),
   onError: vi.fn(),
   scopes: ['read', 'write'] as string[],
+  archived: false,
   verification: null as VerificationSummary | null,
 }))
 vi.mock('@/lib/behaviors', async (original) => ({
@@ -34,6 +35,7 @@ vi.mock('../specification/context', () => ({
     lang: 'en',
     project: 'demo',
     scopes: mocks.scopes,
+    projects: [{ id: 'demo', name: 'Demo', archived: mocks.archived }],
     nodes: [
       { id: 'mn-save', parent: null, order: 'a', title: 'Saving', position: 0 },
       { id: 'mn-share', parent: null, order: 'b', title: 'Sharing', position: 1 },
@@ -75,6 +77,7 @@ function show(url = '/projects/demo/specification?view=tests') {
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.scopes = ['read', 'write']
+  mocks.archived = false
   mocks.verification = {
     fresh_days: 14,
     summary: counts({ total: 2, verified: 1, failing: 1 }),
@@ -210,6 +213,14 @@ describe('TestsView', () => {
     mocks.listBehaviors.mockResolvedValue({ items: [], total: 0, limit: 500 })
     show()
     expect(await screen.findByText(/No behaviors yet\. Describe what the software must do/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '+ New behavior' })).toBeNull()
+  })
+
+  it('offers no writes in an archived project, which would refuse them', async () => {
+    mocks.archived = true
+    mocks.listBehaviors.mockResolvedValue({ items: [], total: 0, limit: 500 })
+    show()
+    expect(await screen.findByText(/No behaviors yet/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: '+ New behavior' })).toBeNull()
   })
 })
