@@ -99,45 +99,62 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('TestsView', () => {
-  it('lists behaviors with status, linked tests and the latest result', async () => {
+  it('reads top down: overall progress, then sections, then behaviors in plain words', async () => {
     show()
-    const row = (await screen.findByRole('heading', { name: 'Failed save keeps edits' })).closest('button')!
-    expect(within(row).getByText('Verified')).toBeTruthy()
-    expect(within(row).getByText(/1 test · a1b2c3d · \d+s · Saving/)).toBeTruthy()
-    expect(screen.getByRole('heading', { name: 'Share link opens read-only' }).closest('button')!.textContent).toContain('No linked tests')
-    expect(screen.getByRole('button', { name: 'Failing · 1' })).toBeTruthy()
-    expect(screen.getByText('Verified means a linked test passed in the last 14 days.')).toBeTruthy()
+    expect(await screen.findByText('1 of 2 behaviors verified')).toBeTruthy()
+    expect(screen.getByText(/No test run reported yet\./)).toBeTruthy()
+    const sections = screen.getAllByRole('button', { name: /^Show or hide/ })
+    // The section with a failure comes first; the fully verified one starts folded.
+    expect(sections.map((b) => b.getAttribute('aria-label'))).toEqual(['Show or hide Sharing', 'Show or hide Saving'])
+    expect(sections[0]!.getAttribute('aria-expanded')).toBe('true')
+    expect(sections[1]!.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByText('0/1 verified')).toBeTruthy()
+    const failing = screen.getByText('Share link opens read-only').closest('button')!
+    expect(within(failing).getByText('No test linked yet')).toBeTruthy()
+    expect(screen.queryByText('Failed save keeps edits')).toBeNull()
+
+    fireEvent.click(sections[1]!)
+    const verified = screen.getByText('Failed save keeps edits').closest('button')!
+    expect(within(verified).getByText(/^Passed \d+s ago$/)).toBeTruthy()
+    // No test keys on the list: they wait until a behavior is opened.
+    expect(screen.queryByText(/playwright:/)).toBeNull()
   })
 
-  it('filters by status and by text', async () => {
+  it('filters with the status chips and the search in the ribbon', async () => {
     show()
-    await screen.findByRole('heading', { name: 'Failed save keeps edits' })
-    fireEvent.click(screen.getByRole('button', { name: 'Failing · 1' }))
-    expect(screen.queryByRole('heading', { name: 'Failed save keeps edits' })).toBeNull()
-    expect(screen.getByRole('heading', { name: 'Share link opens read-only' })).toBeTruthy()
+    await screen.findByText('Share link opens read-only')
+    const chips = within(screen.getByRole('group', { name: 'Filter by status' }))
+    expect(chips.getByRole('button', { name: /All\s*2/ })).toBeTruthy()
+    fireEvent.click(chips.getByRole('button', { name: /Verified\s*1/ }))
+    expect(screen.queryByText('Share link opens read-only')).toBeNull()
+    // A filter opens the folded section it looks into.
+    expect(screen.getByText('Failed save keeps edits')).toBeTruthy()
+    fireEvent.click(chips.getByRole('button', { name: /All\s*2/ }))
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search behaviors' }), { target: { value: 'nothing like it' } })
+    expect(screen.getByText('No behaviors match these filters.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Search behaviors' }), { target: { value: 'editor.spec' } })
-    expect(screen.getByRole('heading', { name: 'Failed save keeps edits' })).toBeTruthy()
-    expect(screen.queryByRole('heading', { name: 'Share link opens read-only' })).toBeNull()
+    expect(screen.getByText('Share link opens read-only')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Refresh/ })).toBeNull()
   })
 
   it('narrows to the selected section and uses its counts', async () => {
     show('/projects/demo/specification?view=tests&section=mn-share')
     expect(await screen.findByText('Share link opens read-only')).toBeTruthy()
     expect(screen.queryByText('Failed save keeps edits')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Verified · 0' })).toBeTruthy()
-    expect(screen.queryByText('Reported tests without a behavior · 1')).toBeNull()
+    expect(screen.getByText('0 of 1 behaviors verified')).toBeTruthy()
+    expect(screen.queryByText(/reported tests belong to no behavior/)).toBeNull()
   })
 
-  it('opens a behavior when its row is chosen', async () => {
+  it('opens a behavior in place when its row is chosen, and closes it again', async () => {
     show()
-    fireEvent.click(await screen.findByRole('heading', { name: 'Failed save keeps edits' }))
-    expect(mocks.openBehavior).toHaveBeenCalledWith('bhv-save')
+    fireEvent.click(await screen.findByText('Share link opens read-only'))
+    expect(mocks.openBehavior).toHaveBeenCalledWith('bhv-share')
   })
 
-  it('shows the selected behavior with its tests and history, and saves edits', async () => {
+  it('shows an opened behavior as prose and the tests that show it, technical details on request', async () => {
     const detail: BehaviorDetail = {
-      ...behavior(),
+      ...behavior({ status: 'failing' }),
+      tests: ['cargo:api::save_conflict', 'playwright:editor.spec.ts › keeps edits'],
       test_results: [
         { test: 'playwright:editor.spec.ts › keeps edits', latest: { outcome: 'fail', detail: 'Timeout after 5s', at: now, commit: 'ffee001', run: 'vrn-2', actor: 'agent:ci' } },
         { test: 'cargo:api::save_conflict', latest: null },
@@ -149,34 +166,65 @@ describe('TestsView', () => {
     mocks.getBehavior.mockResolvedValue(detail)
     mocks.patchBehavior.mockResolvedValue(behavior())
     show('/projects/demo/specification?view=tests&behavior=bhv-save')
-    const title = await screen.findByLabelText('Title')
-    expect(screen.getByText('not reported yet')).toBeTruthy()
-    expect(screen.getAllByText('Timeout after 5s')).toHaveLength(2)
+    const shownBy = await screen.findByRole('region', { name: 'Shown by' })
+    expect(screen.getByText('When saving fails, edits stay.')).toBeTruthy()
+    expect(within(shownBy).getByText('keeps edits')).toBeTruthy()
+    expect(within(shownBy).getByText(/^Browser · failed \d+s ago$/)).toBeTruthy()
+    expect(within(shownBy).getByText('Timeout after 5s')).toBeTruthy()
+    expect(within(shownBy).getByText('save conflict')).toBeTruthy()
+    expect(within(shownBy).getByText('Unit · never reported')).toBeTruthy()
+    // Raw keys, the run history and the edit form are one click away, not on screen.
+    expect(screen.queryByText('cargo:api::save_conflict')).toBeNull()
+    expect(screen.queryByText('nightly')).toBeNull()
+    expect(screen.queryByLabelText('Title')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Technical details' }))
+    expect(screen.getByText('cargo:api::save_conflict')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
     expect(screen.getByText('nightly')).toBeTruthy()
 
-    fireEvent.change(title, { target: { value: 'Failed save keeps every edit' } })
+    fireEvent.click(within(shownBy).getByRole('button', { name: 'Unlink save conflict' }))
+    await waitFor(() =>
+      expect(mocks.patchBehavior).toHaveBeenCalledWith('token', 'bhv-save', { remove_tests: ['cargo:api::save_conflict'] }),
+    )
+    expect(mocks.refreshVerification).toHaveBeenCalled()
+  })
+
+  it('edits title, text and section together behind one Save', async () => {
+    mocks.getBehavior.mockResolvedValue({ ...behavior(), test_results: [], history: [] })
+    mocks.patchBehavior.mockResolvedValue(behavior())
+    show('/projects/demo/specification?view=tests&behavior=bhv-save')
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Failed save keeps every edit' } })
+    fireEvent.change(screen.getByLabelText('Section of the specification'), { target: { value: 'mn-share' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() =>
       expect(mocks.patchBehavior).toHaveBeenCalledWith('token', 'bhv-save', {
         title: 'Failed save keeps every edit',
         statement: 'When saving fails, edits stay.',
+        section: 'mn-share',
       }),
     )
+    await waitFor(() => expect(screen.queryByLabelText('Title')).toBeNull())
+  })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove cargo:api::save_conflict' }))
+  it('links a test to an opened behavior', async () => {
+    mocks.getBehavior.mockResolvedValue({ ...behavior(), test_results: [], history: [] })
+    mocks.patchBehavior.mockResolvedValue(behavior())
+    show('/projects/demo/specification?view=tests&behavior=bhv-save')
+    fireEvent.click(await screen.findByRole('button', { name: 'Link a test' }))
+    fireEvent.change(screen.getByLabelText('Test key, as CI reports it'), { target: { value: 'cargo:api::retry' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Link' }))
     await waitFor(() =>
-      expect(mocks.patchBehavior).toHaveBeenCalledWith('token', 'bhv-save', {
-        remove_tests: ['cargo:api::save_conflict'],
-      }),
+      expect(mocks.patchBehavior).toHaveBeenCalledWith('token', 'bhv-save', { add_tests: ['cargo:api::retry'] }),
     )
-    expect(mocks.refreshVerification).toHaveBeenCalled()
   })
 
   it('creates a behavior with its section and linked tests', async () => {
     mocks.createBehavior.mockResolvedValue(behavior({ id: 'bhv-new' }))
     show('/projects/demo/specification?view=tests&section=mn-save')
     await screen.findByText('Failed save keeps edits')
-    fireEvent.click(screen.getByRole('button', { name: '+ New behavior' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New behavior' }))
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
     expect(await within(dialog).findByText('A behavior needs a title.')).toBeTruthy()
@@ -196,10 +244,12 @@ describe('TestsView', () => {
     await waitFor(() => expect(mocks.openBehavior).toHaveBeenCalledWith('bhv-new'))
   })
 
-  it('links a reported but unlinked test to a behavior', async () => {
+  it('keeps reported but unlinked tests folded, and links one to a behavior', async () => {
     mocks.patchBehavior.mockResolvedValue(behavior())
     show()
-    await screen.findByText('Reported tests without a behavior · 1')
+    const toggle = await screen.findByRole('button', { name: /1 reported tests belong to no behavior/ })
+    expect(screen.queryByRole('combobox', { name: 'Link cargo:api::orphan to a behavior' })).toBeNull()
+    fireEvent.click(toggle)
     fireEvent.change(screen.getByRole('combobox', { name: 'Link cargo:api::orphan to a behavior' }), {
       target: { value: 'bhv-share' },
     })
@@ -213,7 +263,7 @@ describe('TestsView', () => {
     mocks.listBehaviors.mockResolvedValue({ items: [], total: 0, limit: 500 })
     show()
     expect(await screen.findByText(/No behaviors yet\. Describe what the software must do/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: '+ New behavior' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'New behavior' })).toBeNull()
   })
 
   it('offers no writes in an archived project, which would refuse them', async () => {
@@ -221,6 +271,6 @@ describe('TestsView', () => {
     mocks.listBehaviors.mockResolvedValue({ items: [], total: 0, limit: 500 })
     show()
     expect(await screen.findByText(/No behaviors yet/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: '+ New behavior' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'New behavior' })).toBeNull()
   })
 })

@@ -1,3 +1,4 @@
+import { CircleCheck, CircleDashed, CircleX, Clock } from 'lucide-react'
 import type { BehaviorStatus } from '@/lib/behaviors'
 import { cn } from '@/lib/utils'
 
@@ -44,5 +45,65 @@ export function OutcomeMark({ outcome, label }: { outcome: 'pass' | 'fail'; labe
     <span className={cn('text-xs font-semibold', outcome === 'pass' ? 'text-ok' : 'text-nf')}>
       {label}
     </span>
+  )
+}
+
+/** Most urgent first: what needs doing before what is done. */
+export const STATUS_ORDER: Record<BehaviorStatus, number> = { failing: 0, stale: 1, untested: 2, verified: 3 }
+
+export const statusText: Record<BehaviorStatus, string> = {
+  verified: 'text-ok',
+  failing: 'text-nf',
+  stale: 'text-warn',
+  untested: 'text-muted-foreground',
+}
+
+/** Fill for a progress segment of this status. */
+export const statusFill: Record<BehaviorStatus, string> = {
+  verified: 'bg-ok',
+  failing: 'bg-nf',
+  stale: 'bg-warn',
+  untested: 'bg-muted-foreground/25',
+}
+
+const icons = { verified: CircleCheck, failing: CircleX, stale: Clock, untested: CircleDashed }
+
+/** The status as a shape as well as a colour, so it reads without colour too. */
+export function StatusIcon({ status, label, className }: { status: BehaviorStatus; label?: string; className?: string }) {
+  const Icon = icons[status]
+  return (
+    <Icon
+      className={cn('size-4 shrink-0', statusText[status], className)}
+      aria-hidden={label ? undefined : true}
+      aria-label={label}
+      role={label ? 'img' : undefined}
+    />
+  )
+}
+
+/** One bar, one segment per status in urgency order; empty when there is nothing to count. */
+export function StatusBar({
+  counts,
+  label,
+  className,
+}: {
+  counts: Record<BehaviorStatus, number> & { total: number }
+  label: string
+  className?: string
+}) {
+  const order: BehaviorStatus[] = ['verified', 'failing', 'stale', 'untested']
+  return (
+    <div
+      role="img"
+      aria-label={label}
+      className={cn('bg-muted flex h-2 w-full overflow-hidden rounded-full', className)}
+    >
+      {counts.total > 0 &&
+        order.map((status) =>
+          counts[status] > 0 ? (
+            <span key={status} className={statusFill[status]} style={{ width: `${(counts[status] / counts.total) * 100}%` }} />
+          ) : null,
+        )}
+    </div>
   )
 }

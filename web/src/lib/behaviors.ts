@@ -177,3 +177,63 @@ export function resultStamp(result: { commit: string | null; at: string }, now: 
   const age = fmtAge(result.at, now)
   return result.commit ? `${result.commit.slice(0, 7)} · ${age}` : age
 }
+
+/** What kind of check a test key names, from its runner prefix — for people, not for matching. */
+export type TestKind = 'browser' | 'component' | 'unit' | 'integration' | 'contract' | 'agent' | 'other'
+
+export interface TestDescription {
+  /** The test's own name, readable: the last title segment, or an xUnit/Rust method with `_` as spaces. */
+  name: string
+  kind: TestKind
+  /** Where it lives — the file, or the class — when the key says. */
+  location: string | null
+}
+
+const RUNNER_KINDS: Record<string, TestKind> = {
+  playwright: 'browser',
+  cypress: 'browser',
+  testbed: 'component',
+  vitest: 'unit',
+  jest: 'unit',
+  cargo: 'unit',
+  pytest: 'unit',
+  agent: 'agent',
+}
+
+/**
+ * Split a test key into what a reader needs first. Keys are runner-prefixed
+ * (`playwright:file › describe › test`, `xunit:Ns.Class.Method`,
+ * `cargo:module::test`); anything else is shown as it is.
+ */
+export function describeTest(key: string): TestDescription {
+  const colon = key.indexOf(':')
+  const runner = colon > 0 ? key.slice(0, colon).toLowerCase() : ''
+  const rest = colon > 0 ? key.slice(colon + 1) : key
+  const spaced = (s: string) => s.replace(/_/g, ' ').trim()
+  if (rest.includes(' › ')) {
+    const parts = rest.split(' › ')
+    return {
+      name: (parts.at(-1) ?? rest).trim(),
+      kind: RUNNER_KINDS[runner] ?? 'other',
+      location: (parts[0] ?? '').trim().split('/').pop() || null,
+    }
+  }
+  if (runner === 'xunit' || runner === 'nunit' || runner === 'junit') {
+    const parts = rest.split('.')
+    const kind: TestKind = /IntegrationTests/.test(rest)
+      ? 'integration'
+      : /Contract/.test(rest)
+        ? 'contract'
+        : 'unit'
+    return { name: spaced(parts.at(-1) ?? rest), kind, location: parts.at(-2) ?? null }
+  }
+  if (rest.includes('::')) {
+    const parts = rest.split('::')
+    return {
+      name: spaced(parts.at(-1) ?? rest),
+      kind: RUNNER_KINDS[runner] ?? 'other',
+      location: parts.slice(0, -1).join('::') || null,
+    }
+  }
+  return { name: runner === 'agent' ? spaced(rest.replace(/-/g, ' ')) : rest, kind: RUNNER_KINDS[runner] ?? 'other', location: null }
+}

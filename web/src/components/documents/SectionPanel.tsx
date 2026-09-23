@@ -289,9 +289,9 @@ export function SectionPanel({
           <button
             type="button"
             onClick={onShowTests}
-            className={`cursor-pointer text-xs hover:underline ${failingTests ? 'text-destructive' : 'text-muted-foreground'}`}
+            className={`inline-flex cursor-pointer items-center gap-1 text-xs hover:underline ${failingTests ? 'text-destructive' : 'text-muted-foreground'}`}
           >
-            <ShieldCheck className="size-4" aria-hidden="true" /> {testsLabel}
+            <ShieldCheck className="size-4 shrink-0" aria-hidden="true" /> {testsLabel}
           </button>
         )}
         {proposalCount > 0 && onToggleProposals && (
