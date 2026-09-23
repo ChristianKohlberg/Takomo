@@ -2366,24 +2366,18 @@ print(f"{d['id']}  {d['status']}  {d['title']}")
 PY
 }
 
-# Read-modify-write of the linked keys: PATCH replaces the whole list.
+# add_tests/remove_tests apply against the list as the server holds it, so a
+# link made by someone else at the same moment is kept.
 cmd_behavior_link() {
   local mode=$1; shift
   local id=${1:-}; [ -n "$id" ] || die "behavior $mode: usage: takomo behavior $mode ID KEY..."
   shift
   [ $# -gt 0 ] || die "behavior $mode: name at least one test KEY"
-  api GET "/v1/behaviors/$(urlenc "$id")" >/dev/null
   local data
-  data=$(python3 - "$REQ_OUT" "$mode" "$@" <<'PY'
+  data=$(python3 - "$mode" "$@" <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1]))
-mode, keys = sys.argv[2], sys.argv[3:]
-tests = list(d.get("tests") or [])
-if mode == "link":
-    tests += [k for k in keys if k not in tests]
-else:
-    tests = [t for t in tests if t not in keys]
-print(json.dumps({"tests": tests}))
+mode, keys = sys.argv[1], sys.argv[2:]
+print(json.dumps({"add_tests" if mode == "link" else "remove_tests": keys}))
 PY
 )
   api PATCH "/v1/behaviors/$(urlenc "$id")" "$data" >/dev/null

@@ -1104,14 +1104,17 @@ server.registerTool(
   {
     title: "Edit a behavior or its linked tests",
     description:
-      "Change a behavior's title, statement or section, or replace its linked test keys (send the " +
-      'full list you want). Pass section "" to unlink it from any section.',
+      "Change a behavior's title, statement or section, or its linked test keys: add_tests links " +
+      "keys and remove_tests unlinks them, keeping the rest even if another agent edits too; tests " +
+      'replaces the whole list. Pass section "" to unlink it from any section.',
     inputSchema: {
       id: z.string().describe("Behavior id (bhv-…)."),
       title: z.string().optional(),
       statement: z.string().optional(),
       section: z.string().optional().describe('New plan node id, or "" to unlink.'),
       tests: z.array(z.string()).optional().describe("Replaces the full list of linked keys."),
+      add_tests: z.array(z.string()).optional().describe("Keys to link, keeping those already linked."),
+      remove_tests: z.array(z.string()).optional().describe("Keys to unlink, keeping the rest."),
     },
   },
   tool(async (a) => {
@@ -1120,6 +1123,8 @@ server.registerTool(
     if (a.statement !== undefined) body.statement = a.statement;
     if (a.section !== undefined) body.section = a.section === "" ? null : a.section;
     if (a.tests !== undefined) body.tests = a.tests;
+    if (a.add_tests !== undefined) body.add_tests = a.add_tests;
+    if (a.remove_tests !== undefined) body.remove_tests = a.remove_tests;
     const res = await client.request<any>({
       method: "PATCH",
       path: `/behaviors/${encodeURIComponent(a.id)}`,

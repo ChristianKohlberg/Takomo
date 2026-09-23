@@ -121,7 +121,7 @@ export function BehaviorDetail({
     const key = newTest.trim()
     if (!key || detail.tests.includes(key)) return
     // Clear the field only once the key is saved, so a failed save keeps it.
-    void save({ tests: [...detail.tests, key] }).then((saved) => {
+    void save({ add_tests: [key] }).then((saved) => {
       if (saved) setNewTest('')
     })
   }
@@ -211,7 +211,7 @@ export function BehaviorDetail({
                     aria-label={t.removeTest.replace('{test}', item.test)}
                     className="text-muted-foreground hover:text-foreground cursor-pointer text-sm leading-none"
                     disabled={busy}
-                    onClick={() => void save({ tests: detail.tests.filter((key) => key !== item.test) })}
+                    onClick={() => void save({ remove_tests: [item.test] })}
                   >
                     ×
                   </button>

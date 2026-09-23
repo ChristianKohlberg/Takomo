@@ -530,3 +530,58 @@ async fn edges_behave() {
     assert_eq!(d["status"], "failing", "{d}");
     assert_eq!(d["last_result"]["test"], "k2", "{d}");
 }
+
+/// `add_tests`/`remove_tests` change the list in place, so two agents that
+/// read the same behavior and each link a test both keep their link — which
+/// `tests`, a whole-list replace, cannot promise.
+#[tokio::test]
+async fn link_and_unlink_compose_with_concurrent_edits() {
+    let app = TestApp::spawn().await;
+    let b = behavior(&app, json!({ "title": "Shared", "tests": ["base"] })).await;
+    let path = format!("/v1/behaviors/{}", b["id"].as_str().unwrap());
+
+    // Both agents saw ["base"]; each links its own test.
+    let (s, one) = app
+        .patch(&app.worker, &path, json!({ "add_tests": ["agent:a"] }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{one}");
+    let (_, two) = app
+        .patch(
+            &app.worker,
+            &path,
+            json!({ "add_tests": ["agent:b", "base"] }),
+        )
+        .await;
+    assert_eq!(two["tests"], json!(["agent:a", "agent:b", "base"]));
+
+    let (_, less) = app
+        .patch(
+            &app.worker,
+            &path,
+            json!({ "remove_tests": ["base", "never-linked"], "add_tests": ["agent:c"] }),
+        )
+        .await;
+    assert_eq!(less["tests"], json!(["agent:a", "agent:b", "agent:c"]));
+
+    // Linking what is linked changes nothing, not even `updated_at`.
+    let (_, same) = app
+        .patch(&app.worker, &path, json!({ "add_tests": ["agent:a"] }))
+        .await;
+    assert_eq!(same["updated_at"], less["updated_at"]);
+
+    // Whole-list replace and in-place changes do not mix.
+    let (s, bad) = app
+        .patch(
+            &app.worker,
+            &path,
+            json!({ "tests": ["x"], "add_tests": ["y"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.behavior_tests");
+    let (s, bad) = app
+        .patch(&app.worker, &path, json!({ "add_tests": ["  "] }))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.test_key");
+}

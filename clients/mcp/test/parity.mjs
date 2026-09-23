@@ -113,6 +113,10 @@ for (const kind of ["hosted", "stdio"]) {
     const shown = await tool(client, "takomo_behavior", { id: behavior.id });
     assert.equal(shown.status, "failing");
     assert.equal(shown.test_results[0].latest.detail, "x");
+    const linked = await tool(client, "takomo_behavior_update", { id: behavior.id, add_tests: [`${kind}:u`] });
+    assert.deepEqual(linked.tests, [`${kind}:t`, `${kind}:u`], "add_tests keeps what was linked");
+    const unlinked = await tool(client, "takomo_behavior_update", { id: behavior.id, remove_tests: [`${kind}:u`] });
+    assert.deepEqual(unlinked.tests, [`${kind}:t`]);
     await tool(client, "takomo_behavior_update", { id: behavior.id, section: "mn-nosuchnode" }, true);
     console.log(`${kind}: lifecycle, rollback, ownership, scope, lease and verification parity passed`);
   } finally {

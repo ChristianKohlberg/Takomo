@@ -190,7 +190,7 @@ async function main() {
   // Linking the failing key fails the behavior: any failure wins.
   const linked = await call("takomo_behavior_update", {
     id: behaviorId,
-    tests: ["e2e:save-twice", "e2e:unlinked"],
+    add_tests: ["e2e:unlinked"],
   });
   expect(!linked.isError && linked.data.status === "failing", "linking a failing test fails it");
 

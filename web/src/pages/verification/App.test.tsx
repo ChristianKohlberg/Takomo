@@ -166,7 +166,7 @@ describe('TestsView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove cargo:api::save_conflict' }))
     await waitFor(() =>
       expect(mocks.patchBehavior).toHaveBeenCalledWith('token', 'bhv-save', {
-        tests: ['playwright:editor.spec.ts › keeps edits'],
+        remove_tests: ['cargo:api::save_conflict'],
       }),
     )
     expect(mocks.refreshVerification).toHaveBeenCalled()
@@ -204,7 +204,7 @@ describe('TestsView', () => {
       target: { value: 'bhv-share' },
     })
     await waitFor(() =>
-      expect(mocks.patchBehavior).toHaveBeenCalledWith('token', 'bhv-share', { tests: ['cargo:api::orphan'] }),
+      expect(mocks.patchBehavior).toHaveBeenCalledWith('token', 'bhv-share', { add_tests: ['cargo:api::orphan'] }),
     )
   })
 

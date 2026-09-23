@@ -72,7 +72,13 @@ pub struct BehaviorPatch {
     pub title: Option<String>,
     pub statement: Option<String>,
     pub section: Option<Option<String>>,
+    /// Replaces the whole list. Read-modify-write: a concurrent edit is lost.
     pub tests: Option<Vec<String>>,
+    /// Link these keys, keeping the rest — applied against the list as it is
+    /// inside the transaction, so two agents linking at once both land.
+    pub add_tests: Option<Vec<String>>,
+    /// Unlink these keys, keeping the rest. Unknown keys are ignored.
+    pub remove_tests: Option<Vec<String>>,
 }
 
 pub struct BehaviorFilter {
@@ -696,11 +702,41 @@ impl Store {
         if let Some(s) = &patch.statement {
             validate_statement(s)?;
         }
-        let tests = patch.tests.as_deref().map(normalize_tests).transpose()?;
+        let replace = patch.tests.as_deref().map(normalize_tests).transpose()?;
+        let delta = patch.add_tests.is_some() || patch.remove_tests.is_some();
+        if replace.is_some() && delta {
+            return Err(ApiError::validation(
+                "validation.behavior_tests",
+                "Send either `tests` (the whole list) or `add_tests`/`remove_tests` (changes to it), not both.",
+            )
+            .remedy(
+                "To link or unlink a few keys, send only add_tests/remove_tests; they apply \
+                 against the current list, so concurrent edits are kept."
+                    .to_string(),
+            ));
+        }
+        let key_list = |keys: &Option<Vec<String>>| -> ApiResult<Vec<String>> {
+            keys.iter()
+                .flatten()
+                .map(|k| validate_test_key(k))
+                .collect()
+        };
+        let (add, remove) = (key_list(&patch.add_tests)?, key_list(&patch.remove_tests)?);
         let now = now_ms();
         self.with_tx(|tx| {
             let project = project_of(tx, id)?;
             ensure_project_writable(tx, &project)?;
+            let tests = if delta {
+                let current = load_tests(tx, id)?;
+                let mut next = current.clone();
+                next.retain(|k| !remove.contains(k));
+                next.extend(add.iter().filter(|k| !remove.contains(k)).cloned());
+                let next = normalize_tests(&next)?;
+                // Linking what is linked, or unlinking what is not, is no change.
+                (next != current).then_some(next)
+            } else {
+                replace
+            };
             if title.is_none()
                 && patch.statement.is_none()
                 && patch.section.is_none()
