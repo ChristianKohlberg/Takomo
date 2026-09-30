@@ -437,7 +437,8 @@ for everyone).
 **Section focus** (DE „Nur diesen Abschnitt anzeigen") narrows the document to one section and
 its subsections. It is unrelated to **Focus mode**, which only hides chrome; the two combine.
 Enter it from a heading's section actions (ellipsis), from the outline's section menu, or with
-**Alt+F** on the current section. **Alt+Shift+F** does the same for browsers that keep Alt+F for
+**Alt+F** on the current section. From the map, **Focus in document** in a node's menu or ⌘K
+opens the document already focused on that node's section. **Alt+Shift+F** does the same for browsers that keep Alt+F for
 their own menu (Firefox on Windows/Linux); on macOS it is Option+F. The shortcut toggles: on the
 focused section itself it leaves focus.
 

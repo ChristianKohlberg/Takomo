@@ -223,6 +223,12 @@ export interface LiveProps {
    * "show it on the map", which `/documents` offers in the other direction.
    */
   onOpenPlan: (node: string | null) => void
+  /**
+   * Open one thought as its section of the document: selected and scrolled to,
+   * or — with `focus` — on its own in section focus. Navigation, so it is offered
+   * on a read-only token too.
+   */
+  onOpenDocument?: (node: string, focus: boolean) => void
   /** The third view: what has to pass before this part is done. */
   onOpenTests: (node: string | null) => void
   /**
@@ -277,6 +283,7 @@ function ConnectedLive({
   onProject,
   canManageMap,
   onOpenPlan,
+  onOpenDocument,
   onOpenTests,
   testsFor,
   token,
@@ -1001,6 +1008,12 @@ function ConnectedLive({
         case 'node.delete':
           setPruning(node)
           break
+        case 'node.document':
+        case 'node.documentFocus':
+          if (!node) break
+          if (onOpenDocument) onOpenDocument(node, id === 'node.documentFocus')
+          else onOpenPlan(node)
+          break
         case 'map.plan':
           onOpenPlan(node ?? null)
           break
@@ -1036,6 +1049,7 @@ function ConnectedLive({
       goTo,
       onProject,
       onOpenPlan,
+      onOpenDocument,
       onOpenTests,
       selected,
       onChild,
@@ -1198,6 +1212,8 @@ function ConnectedLive({
         <Outline
           onFocusBranch={enterFocus}
           focusLabel={focusLabel}
+          onOpenInDocument={onOpenDocument ? (id) => onOpenDocument(id, false) : undefined}
+          onFocusInDocument={onOpenDocument ? (id) => onOpenDocument(id, true) : undefined}
           searchMatches={scopedMatches}
           nodes={shown}
           selected={selected}

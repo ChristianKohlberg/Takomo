@@ -28,6 +28,7 @@ import { fuzzyRank, isTextEntry } from '@/lib/mindmap-commands'
 import { createMindmap, deleteMindmap, patchMindmap } from '@/lib/mindmaps'
 import { planLink } from '@/lib/plan-url'
 import { saveProject } from '@/lib/session'
+import { specificationLink } from '@/lib/specification-url'
 import Live from './Live'
 import { STR } from './strings'
 
@@ -123,6 +124,21 @@ export function MapView() {
     [open, navigate],
   )
 
+  /**
+   * One thought, as its section of the document: selected and scrolled to, or
+   * on its own in section focus. A history entry (not a replace), so the
+   * browser's Back returns to the map, which stays mounted and keeps its
+   * viewport and selection.
+   */
+  const openDocument = useCallback(
+    (node: string, focus: boolean) => {
+      const target = open?.project || selectedProject
+      if (open) saveProject(open.project)
+      navigate(specificationLink(target, 'document', node, focus ? node : null))
+    },
+    [open, selectedProject, navigate],
+  )
+
   /** The tests for the selected thought, on the same terms as the plan link. */
   const chooseProject = setProject
 
@@ -178,6 +194,7 @@ export function MapView() {
               onProject={chooseProject}
               canManageMap={canWrite}
               onOpenPlan={openPlan}
+              onOpenDocument={openDocument}
               onOpenTests={openTests}
               testsFor={testsFor}
               token={token}
@@ -244,6 +261,8 @@ export function MapView() {
               }}
               outlineLabels={{
                 actions: t.nodeActions,
+                openInDocument: t.cmdDocument,
+                focusInDocument: t.cmdDocumentFocus,
                 edit: t.editThought,
                 rename: t.renameThought,
                 nameField: t.nameField,
@@ -378,6 +397,8 @@ export function MapView() {
                 keys: t.paletteKeys,
               }}
               commandLabels={{
+                'node.document': t.cmdDocument,
+                'node.documentFocus': t.cmdDocumentFocus,
                 'node.child': t.cmdChild,
                 'node.sibling': t.cmdSibling,
                 'node.rename': t.cmdRename,
@@ -400,6 +421,8 @@ export function MapView() {
               }}
               commandHints={{
                 'node.open': t.cmdOpenHint,
+                'node.document': t.cmdDocumentHint,
+                'node.documentFocus': t.cmdDocumentFocusHint,
                 'node.relate': t.cmdRelateHint,
                 'node.ask': t.cmdAskHint,
                 'map.trust': t.trustLensHint,

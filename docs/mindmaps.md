@@ -363,6 +363,19 @@ event.
   matches while respecting the camera lock; ⌘/Ctrl S focuses the search field.
   The phone outline highlights the same matches.
 
+  **Open in document** and **Focus in document** (DE „Im Dokument öffnen",
+  „Im Dokument fokussieren") jump from a thought to its section in the document
+  view. They head the node's right-click menu (also Shift+F10 or the ContextMenu
+  key), sit in ⌘K for the selected thought — where they replace **Read it as the
+  plan**, which stays for the map with nothing selected — and in the phone
+  outline's `⋯` menu. Both are navigation, so read-only tokens have them too. The
+  first lands on `?view=document&section=<node id>`, with the section selected
+  and scrolled to; the second adds `focus=<node id>` and opens the
+  document's section focus. Each is a history entry: the map view stays mounted
+  while the document is shown, so browser Back returns to the map with its
+  viewport and selection as they were. The reverse is **Show it on the map** in
+  a section's actions in the document. There is no keyboard shortcut for either.
+
   **Focus branch** in a node's floating toolbar, right-click menu, or phone menu
   shows only that node and its descendants. Existing folds remain in effect;
   connections to nodes outside the branch are hidden. A breadcrumb lets you focus
