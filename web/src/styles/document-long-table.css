@@ -1,0 +1,45 @@
+/* Long document tables (>10 body rows) start collapsed — local view state only.
+   Shared by the live editor (lib/long-table-view.ts) and SavedProse. */
+.document-long-table { --long-table-surface: var(--panel); }
+.document-long-table-controls {
+  position: sticky;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  padding: 0.35rem 0 0.15rem;
+}
+.document-long-table-controls[hidden] { display: none; }
+/* Fade + light blur over the last visible rows while collapsed. */
+.document-long-table-fade {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 100%;
+  height: 3.25rem;
+  pointer-events: none;
+  display: none;
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--long-table-surface) 82%, transparent));
+  backdrop-filter: blur(1.5px);
+  -webkit-backdrop-filter: blur(1.5px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 70%);
+  mask-image: linear-gradient(to bottom, transparent, #000 70%);
+}
+.document-long-table[data-long-table="collapsed"] .document-long-table-fade { display: block; }
+.document-long-table-toggle {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--long-table-surface);
+  color: var(--accent2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.2;
+  padding: 0.3rem 0.85rem;
+  cursor: pointer;
+}
+.document-long-table-toggle:hover { background: var(--hover); }
+.document-long-table-toggle:focus-visible { outline: 2px solid var(--ring, var(--accent2)); outline-offset: 2px; }
+/* SavedProse marks its hidden rows directly (it owns its DOM). */
+.document-long-table-hidden { display: none; }
+@media print {
+  .document-long-table tbody > tr, .document-long-table-hidden { display: table-row !important; }
+  .document-long-table-controls { display: none !important; }
+}

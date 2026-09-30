@@ -29,6 +29,8 @@ export const DocumentSearchHighlight = Extension.create({
           for (let parent = match?.parentElement; parent && parent !== view.dom; parent = parent.parentElement) {
             if (parent instanceof HTMLDetailsElement) parent.open = true
             else if (parent.matches('[data-collapsible-block]')) parent.dispatchEvent(new Event('reveal-collapsible'))
+            // A long table expands only when the match sits in one of its hidden rows.
+            else if (parent.matches('[data-long-table]')) parent.dispatchEvent(new CustomEvent('reveal-long-table', { detail: match }))
           }
         } }
       },

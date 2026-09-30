@@ -35,6 +35,9 @@ import { SectionReferenceMenu } from './SectionReferenceMenu'
 import { SectionReferenceTrigger, referenceMatch, type ReferenceMatch } from '@/lib/section-reference-trigger'
 import { CollapsibleBlock, CollapsibleSummary, CollapsibleContent, refreshCollapsibleLabels } from '@/lib/collapsible-block'
 import '@/styles/document-collapsible.css'
+import { LongTables, LongTableView, refreshLongTableLabels } from '@/lib/long-table-view'
+import { longTableLabels } from '@/lib/long-table'
+import '@/styles/document-long-table.css'
 import { TableToolbar } from './TableToolbar'
 import { STR } from './strings'
 import type { Locale } from '@/lib/i18n'
@@ -219,7 +222,9 @@ export default function SectionEditor({
         DiagramCodeBlock.configure({ access: () => accessRef.current, accessChanges: diagramAccessEvents }),
         SectionReferenceTrigger.configure({ menuId: referenceId, onMatch: setReference, onKey: event => referenceKeys.current?.(event) ?? false }),
         SlashInsert.configure({ menuId: slashId, onMatch: setSlash, onKey: event => slashKeys.current?.(event) ?? false }),
-        TableKit.configure({ table: { resizable: true } }),
+        TableKit.configure({ table: { resizable: true, View: LongTableView } }),
+        // Long tables start collapsed per reader; local view state, never a document edit.
+        LongTables.configure({ labels: () => longTableLabels(localeRef.current) }),
         collaboration,
         CollaborationCaret.configure({ provider, user: { name: display, color } }),
         CollaborationHistorySelection,
@@ -310,7 +315,7 @@ export default function SectionEditor({
   }, [editor, label])
 
   useEffect(() => {
-    if (editor) { refreshSectionReferenceLabels(editor); refreshCollapsibleLabels(editor) }
+    if (editor) { refreshSectionReferenceLabels(editor); refreshCollapsibleLabels(editor); refreshLongTableLabels(editor) }
   }, [editor, locale])
 
   useEffect(() => {

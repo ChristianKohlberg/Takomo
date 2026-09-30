@@ -534,7 +534,7 @@ export default function History() {
                               </div>
                             ))}
                           </div>
-                          {item.changed.includes('prose_xml') && <details className="border-t p-3 text-xs"><summary className="cursor-pointer">{lang === 'de' ? 'Vollständigen Inhalt vergleichen' : 'Compare complete content'}</summary><div className="mt-3 grid gap-4 md:grid-cols-2">{[item.before, item.after].map((node, index) => node && <div key={index} className="min-w-0"><p className="mb-2 font-medium">{index ? w.after : w.before}</p><SavedProse node={node} nodes={index ? detail.nodes : comparison!.nodes} access={{ token, project }} missing={lang === 'de' ? 'Abschnitt fehlt' : 'Missing section'} /></div>)}</div></details>}
+                          {item.changed.includes('prose_xml') && <details className="border-t p-3 text-xs"><summary className="cursor-pointer">{lang === 'de' ? 'Vollständigen Inhalt vergleichen' : 'Compare complete content'}</summary><div className="mt-3 grid gap-4 md:grid-cols-2">{[item.before, item.after].map((node, index) => node && <div key={index} className="min-w-0"><p className="mb-2 font-medium">{index ? w.after : w.before}</p><SavedProse node={node} nodes={index ? detail.nodes : comparison!.nodes} access={{ token, project }} missing={lang === 'de' ? 'Abschnitt fehlt' : 'Missing section'} locale={lang} /></div>)}</div></details>}
                           {item.changed.some(
                             (field) =>
                               !['title', 'notes', 'prose_xml'].includes(field),
@@ -614,7 +614,7 @@ export default function History() {
                           <h3 className="break-words text-base font-medium">
                             {node.title || '—'}
                           </h3>
-                          <SavedProse node={node} nodes={detail.nodes} access={{ token, project }} missing={lang === 'de' ? 'Abschnitt fehlt' : 'Missing section'} />
+                          <SavedProse node={node} nodes={detail.nodes} access={{ token, project }} missing={lang === 'de' ? 'Abschnitt fehlt' : 'Missing section'} locale={lang} />
                         </article>
                       ))}
                     </div>
