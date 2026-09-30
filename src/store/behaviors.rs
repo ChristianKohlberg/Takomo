@@ -49,6 +49,12 @@ const MAX_COMMIT: usize = 100;
 const MAX_IDEMPOTENCY_KEY: usize = 128;
 const HISTORY_LIMIT: i64 = 50;
 const UNLINKED_LIMIT: i64 = 50;
+/// A report looks back at most this many days per period.
+pub const MAX_REPORT_DAYS: i64 = 90;
+/// Earlier periods the report's trend covers, besides the current one.
+const REPORT_PERIODS: i64 = 4;
+/// Behaviors listed per report category; `total` still counts them all.
+const REPORT_LIST_LIMIT: usize = 100;
 
 pub const BEHAVIOR_STATUSES: [&str; 4] = ["verified", "failing", "stale", "untested"];
 pub const OUTCOMES: [&str; 2] = ["pass", "fail"];
@@ -169,6 +175,7 @@ impl Behavior {
             "last_result": self.last_result.as_ref().map(|l| json!({
                 "test": l.test,
                 "outcome": l.outcome,
+                "detail": l.detail,
                 "at": iso(l.at),
                 "commit": l.commit,
                 "run": l.run,
@@ -1028,6 +1035,200 @@ impl Store {
                 },
                 "latest_run": latest_run,
             }))
+        })
+    }
+
+    /// What changed in a project's verification over the last `days`: which
+    /// behaviors started working, were repaired, broke or went stale, which
+    /// sections became fully verified, and how many behaviors were verified at
+    /// the end of each of the last few periods.
+    ///
+    /// A past status is recomputed from the results reported up to that moment
+    /// with the rules of [`status_of`], over the tests each behavior links
+    /// *now*: links are not versioned, so a test linked yesterday counts
+    /// towards last week as well. Behaviors created later are left out of an
+    /// earlier moment; deleted ones are gone from every moment.
+    pub fn verification_report(&self, project: &str, days: i64) -> ApiResult<Value> {
+        if !(1..=MAX_REPORT_DAYS).contains(&days) {
+            return Err(ApiError::validation(
+                "validation.report_days",
+                format!("'days' must be between 1 and {MAX_REPORT_DAYS}, got {days}."),
+            )
+            .remedy("Use days=7 for a week or days=30 for a month.".to_string()));
+        }
+        self.with_conn(|conn| {
+            project_exists(conn, project)?;
+            let behaviors = load_project(conn, project)?;
+            let now = now_ms();
+            let period = days * DAY_MS;
+            let since = now - period;
+
+            let mut at_stmt = conn.prepare(
+                "SELECT outcome, at FROM verification_results
+                 WHERE project = ?1 AND test_key = ?2 AND at <= ?3
+                 ORDER BY at DESC, outcome = 'fail' DESC LIMIT 1",
+            )?;
+            // (key, moment) -> the latest result then; keys are shared between behaviors.
+            let mut cache: HashMap<(String, i64), Option<Latest>> = HashMap::new();
+            let mut status_at = |b: &Behavior, t: i64| -> ApiResult<Option<&'static str>> {
+                if b.created_at > t {
+                    return Ok(None);
+                }
+                let mut latest = Vec::new();
+                for k in &b.tests {
+                    let entry = match cache.get(&(k.clone(), t)) {
+                        Some(e) => e.clone(),
+                        None => {
+                            let e = at_stmt
+                                .query_row(params![project, k, t], |r| {
+                                    Ok(Latest {
+                                        test: k.clone(),
+                                        outcome: r.get(0)?,
+                                        detail: None,
+                                        at: r.get(1)?,
+                                        commit: None,
+                                        run: String::new(),
+                                        actor: String::new(),
+                                    })
+                                })
+                                .optional()?;
+                            cache.insert((k.clone(), t), e.clone());
+                            e
+                        }
+                    };
+                    latest.extend(entry);
+                }
+                Ok(Some(status_of(&latest, t)))
+            };
+
+            let mut trend = Vec::new();
+            for k in (1..=REPORT_PERIODS).rev() {
+                let t = now - k * period;
+                let (mut verified, mut total) = (0, 0);
+                for b in &behaviors {
+                    if let Some(s) = status_at(b, t)? {
+                        total += 1;
+                        verified += i64::from(s == "verified");
+                    }
+                }
+                trend.push(json!({ "at": iso(t), "verified": verified, "total": total }));
+            }
+            let verified_now = behaviors.iter().filter(|b| b.status == "verified").count();
+            trend.push(json!({ "at": iso(now), "verified": verified_now, "total": behaviors.len() }));
+
+            let mut then = Vec::with_capacity(behaviors.len());
+            for b in &behaviors {
+                then.push(status_at(b, since)?);
+            }
+
+            let mut failed_stmt = conn.prepare(
+                "SELECT EXISTS(SELECT 1 FROM verification_results
+                 WHERE project = ?1 AND test_key = ?2 AND at > ?3 AND outcome = 'fail')",
+            )?;
+            // When the current failure began: the first fail after the last pass.
+            let mut broke_stmt = conn.prepare(
+                "SELECT MIN(at) FROM verification_results
+                 WHERE project = ?1 AND test_key = ?2 AND outcome = 'fail'
+                   AND at > COALESCE((SELECT MAX(at) FROM verification_results
+                                      WHERE project = ?1 AND test_key = ?2 AND outcome = 'pass'), -1)",
+            )?;
+
+            let mut lists: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
+            for name in ["now_working", "repaired", "broke", "still_failing", "went_stale"] {
+                lists.insert(name, Vec::new());
+            }
+            for (b, before) in behaviors.iter().zip(&then) {
+                let item = |at: Option<i64>| {
+                    json!({
+                        "id": b.id,
+                        "title": b.title,
+                        "section": b.section,
+                        "status": b.status,
+                        "at": at.map(iso),
+                    })
+                };
+                let category = match (b.status, *before) {
+                    ("failing", Some("failing")) => Some("still_failing"),
+                    ("failing", _) => Some("broke"),
+                    ("verified", before) => {
+                        let mut failed = before == Some("failing");
+                        for k in &b.tests {
+                            if failed {
+                                break;
+                            }
+                            failed = failed_stmt.query_row(params![project, k, since], |r| r.get(0))?;
+                        }
+                        if failed {
+                            Some("repaired")
+                        } else if before != Some("verified") {
+                            Some("now_working")
+                        } else {
+                            None
+                        }
+                    }
+                    ("stale", Some("verified")) => Some("went_stale"),
+                    _ => None,
+                };
+                let Some(category) = category else { continue };
+                let at = if b.status == "failing" {
+                    let mut start: Option<i64> = None;
+                    for k in &b.tests {
+                        let first: Option<i64> =
+                            broke_stmt.query_row(params![project, k], |r| r.get(0))?;
+                        if let Some(f) = first {
+                            start = Some(start.map_or(f, |s: i64| s.min(f)));
+                        }
+                    }
+                    start
+                } else {
+                    b.last_result.as_ref().map(|l| l.at)
+                };
+                lists.get_mut(category).expect("known category").push(item(at));
+            }
+
+            // A section is completed when every behavior in it works now and
+            // did not all work at the start of the period.
+            let mut sections: BTreeMap<&str, (usize, usize, usize)> = BTreeMap::new();
+            for (b, before) in behaviors.iter().zip(&then) {
+                if let Some(s) = b.section.as_deref() {
+                    let e = sections.entry(s).or_default();
+                    e.0 += 1;
+                    e.1 += usize::from(b.status == "verified");
+                    e.2 += usize::from(*before == Some("verified"));
+                }
+            }
+            let completed: Vec<Value> = sections
+                .iter()
+                .filter(|(_, (total, now, then))| now == total && then < total)
+                .map(|(s, (total, _, _))| json!({ "section": s, "total": total }))
+                .collect();
+
+            let count = |statuses: &mut dyn Iterator<Item = &'static str>| {
+                let mut c = json!({ "total": 0, "verified": 0, "failing": 0, "stale": 0, "untested": 0 });
+                for s in statuses {
+                    c["total"] = json!(c["total"].as_i64().unwrap_or(0) + 1);
+                    c[s] = json!(c[s].as_i64().unwrap_or(0) + 1);
+                }
+                c
+            };
+            let mut out = json!({
+                "days": days,
+                "since": iso(since),
+                "until": iso(now),
+                "fresh_days": FRESH_DAYS,
+                "now": count(&mut behaviors.iter().map(|b| b.status)),
+                "then": count(&mut then.iter().flatten().copied()),
+                "trend": trend,
+                "sections_completed": completed,
+            });
+            for (name, mut items) in lists {
+                // Newest change first.
+                items.sort_by(|a, b| b["at"].as_str().cmp(&a["at"].as_str()));
+                let total = items.len();
+                items.truncate(REPORT_LIST_LIMIT);
+                out[name] = json!({ "items": items, "total": total, "limit": REPORT_LIST_LIMIT });
+            }
+            Ok(out)
         })
     }
 }

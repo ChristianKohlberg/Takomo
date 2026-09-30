@@ -17,6 +17,8 @@ export type Outcome = 'pass' | 'fail'
 export interface LastResult {
   test: string
   outcome: Outcome
+  /** What the reporter said about it, e.g. why it failed. */
+  detail?: string | null
   at: string
   commit: string | null
   run: string
@@ -103,6 +105,39 @@ export interface VerificationSummary {
   latest_run: Run | null
 }
 
+export interface ReportItem {
+  id: string
+  title: string
+  section: string | null
+  status: BehaviorStatus
+  /** When the change happened: a failure from its first fail, the rest from their latest result. */
+  at: string | null
+}
+
+export interface ReportList {
+  items: ReportItem[]
+  total: number
+  limit: number
+}
+
+/** What changed over the last `days`, from `GET …/verification/report`. */
+export interface VerificationReport {
+  days: number
+  since: string
+  until: string
+  fresh_days: number
+  now: StatusCounts
+  then: StatusCounts
+  /** Verified behaviors at the end of each of the last five periods, oldest first; the last is now. */
+  trend: { at: string; verified: number; total: number }[]
+  now_working: ReportList
+  repaired: ReportList
+  broke: ReportList
+  still_failing: ReportList
+  went_stale: ReportList
+  sections_completed: { section: string; total: number }[]
+}
+
 export interface Paged<T> {
   items: T[]
   total: number
@@ -135,6 +170,50 @@ export function listBehaviors(
 
 export function fetchVerification(token: string, project: string): Promise<VerificationSummary> {
   return api<VerificationSummary>(token, `/projects/${enc(project)}/verification`)
+}
+
+export function fetchReport(token: string, project: string, days: number): Promise<VerificationReport> {
+  return api<VerificationReport>(token, `/projects/${enc(project)}/verification/report?days=${days}`)
+}
+
+export interface RunResult {
+  test: string
+  outcome: Outcome
+  detail?: string
+}
+
+export function reportRun(
+  token: string,
+  project: string,
+  run: { results: RunResult[]; note?: string },
+): Promise<unknown> {
+  return api(token, `/projects/${enc(project)}/runs`, {
+    method: 'POST',
+    headers: json,
+    body: JSON.stringify(run),
+  })
+}
+
+/** The key a check by hand is reported under: one per behavior. */
+export function manualKey(behavior: string): string {
+  return `manual:${behavior}`
+}
+
+/**
+ * The statement's first sentence, as plain text, for a row that shows what a
+ * behavior promises without opening it. Markdown marks are dropped.
+ */
+export function gistOf(statement: string, max = 220): string {
+  const plain = statement
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, '')
+    .replace(/[*_`~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const end = plain.search(/[.!?](\s|$)/)
+  const first = end >= 0 ? plain.slice(0, end + 1) : plain
+  return first.length > max ? `${first.slice(0, max - 1).trimEnd()}…` : first
 }
 
 export function createBehavior(token: string, project: string, fields: BehaviorFields): Promise<Behavior> {
@@ -179,7 +258,7 @@ export function resultStamp(result: { commit: string | null; at: string }, now: 
 }
 
 /** What kind of check a test key names, from its runner prefix — for people, not for matching. */
-export type TestKind = 'browser' | 'component' | 'unit' | 'integration' | 'contract' | 'agent' | 'other'
+export type TestKind = 'browser' | 'component' | 'unit' | 'integration' | 'contract' | 'agent' | 'manual' | 'other'
 
 export interface TestDescription {
   /** The test's own name, readable: the last title segment, or an xUnit/Rust method with `_` as spaces. */
@@ -198,6 +277,7 @@ const RUNNER_KINDS: Record<string, TestKind> = {
   cargo: 'unit',
   pytest: 'unit',
   agent: 'agent',
+  manual: 'manual',
 }
 
 /**
@@ -235,5 +315,6 @@ export function describeTest(key: string): TestDescription {
       location: parts.slice(0, -1).join('::') || null,
     }
   }
+  if (runner === 'manual') return { name: '', kind: 'manual', location: null }
   return { name: runner === 'agent' ? spaced(rest.replace(/-/g, ' ')) : rest, kind: RUNNER_KINDS[runner] ?? 'other', location: null }
 }

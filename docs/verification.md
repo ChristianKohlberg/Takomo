@@ -34,6 +34,11 @@ link a key such as `agent:failed-save-retry`; the behavior's statement is the
 script an agent follows, and it reports the result like any other test. Replacing
 it with an automated test later is linking a new key, not a remodel.
 
+**A check by hand is also just a key.** A person who tried a behavior records
+what they saw from the UI ("Checked it myself"): it links `manual:<behavior id>`
+and reports one result under it, with what they saw as `detail`. The status,
+the track record and the freshness rule treat it like any other result.
+
 ## Status is computed, never stored
 
 From the latest result of each linked key:
@@ -70,6 +75,12 @@ anything.
 4. **Read** where things stand: `GET /v1/projects/{project}/verification` gives
    status counts overall and per section, behaviors with no section, the
    reported tests no behavior links, and the latest run.
+5. **Report on progress**: `GET /v1/projects/{project}/verification/report?days=7`
+   compares every behavior now with its status `days` ago and names what moved
+   — `now_working`, `repaired`, `broke`, `still_failing`, `went_stale` — plus
+   the sections that became fully verified and a five-period `trend`. Past
+   status is recomputed from the results up to that moment over today's links;
+   links are not versioned.
 
 ```sh
 # CI, after the suite ran — one call:
@@ -95,9 +106,12 @@ link as missing rather than deleting anything.
 
 ## Surfaces
 
-- **UI:** Specification → Verification and Evidence
-  (`/projects/{project}/specification?view=tests`). Section counts appear in the
-  Document and Map views; `?behavior=<id>` opens one.
+- **UI:** Specification → Promises
+  (`/projects/{project}/specification?view=tests`). The UI speaks of promises
+  that work, don't work, weren't checked lately or were never checked, and of
+  tests as their evidence; the API keeps `behavior` and the status names. It
+  opens with the period report, then the promises per section; section counts
+  appear in the Document and Map views; `?behavior=<id>` opens one.
 - **MCP:** `takomo_verification`, `takomo_behaviors`, `takomo_behavior`,
   `takomo_behavior_create`, `takomo_behavior_update`, `takomo_run_report`,
   `takomo_runs`. Reads are not charged against the write budget.
@@ -115,7 +129,7 @@ back another behavior.
 ## Deliberately not built
 
 Priorities or tiers on behaviors, a release gate, per-environment requirements,
-human sign-off, parameterised case generation, path-based coverage and release
+human sign-off as a gate (a check by hand is a result, not an approval), parameterised case generation, path-based coverage and release
 staling. The previous checklist and test-run model had all of these and was
 replaced before production because the machinery outweighed the answer it gave.
 Each can return as a column or a table without changing what exists.

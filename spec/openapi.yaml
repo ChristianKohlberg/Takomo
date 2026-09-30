@@ -8010,6 +8010,41 @@ paths:
         default:
           $ref: '#/components/responses/Error'
 
+  /projects/{project}/verification/report:
+    get:
+      tags: [verification]
+      summary: What changed in verification over a period (read scope)
+      description: |
+        Compares every behavior now with its status `days` ago and names what
+        moved: `now_working` (verified now, not then), `repaired` (verified now
+        after a failure then or during the period), `broke` (failing now, not
+        then), `still_failing` and `went_stale` (verified then, stale now).
+        `sections_completed` lists plan sections whose behaviors all work now
+        but did not all work then; `trend` counts verified behaviors at the end
+        of each of the last five periods, oldest first, the last one being now.
+
+        A past status is recomputed from the results reported up to that
+        moment, over the tests each behavior links now; behaviors created
+        later are left out of an earlier moment. Failing items are dated from
+        the first failure after the last pass, the others from their latest
+        result. Each list is newest first, at most 100 items, with `total`.
+      parameters:
+        - { name: project, in: path, required: true, schema: { type: string } }
+        - name: days
+          in: query
+          description: Length of the period in days, 1–90. Defaults to 7.
+          schema: { type: integer, minimum: 1, maximum: 90, default: 7 }
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerificationReport" }
+        "422":
+          description: "`validation.report_days` — `days` is outside 1–90."
+        default:
+          $ref: '#/components/responses/Error'
+
   /projects/{project}/nodes:
     get:
       tags: [mindmaps]
@@ -12049,6 +12084,7 @@ components:
       properties:
         test: { type: string }
         outcome: { type: string, enum: [pass, fail] }
+        detail: { type: [string, "null"], description: 'What the reporter said about it, e.g. why it failed.' }
         at: { type: string, format: date-time }
         commit: { type: [string, "null"] }
         run: { type: string }
@@ -12161,6 +12197,50 @@ components:
         unlinked: { type: array, items: { type: string }, description: 'Reported keys no behavior links.' }
         behaviors_affected: { type: integer }
         replayed: { type: boolean, description: 'true when this answered a retried report with the same Idempotency-Key.' }
+    VerificationReportList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              title: { type: string }
+              section: { type: [string, "null"] }
+              status: { type: string, enum: [verified, failing, stale, untested] }
+              at: { type: [string, "null"], format: date-time, description: 'When the change happened, as far as the results tell.' }
+        total: { type: integer }
+        limit: { type: integer }
+    VerificationReport:
+      type: object
+      properties:
+        days: { type: integer }
+        since: { type: string, format: date-time }
+        until: { type: string, format: date-time }
+        fresh_days: { type: integer }
+        now: { $ref: "#/components/schemas/BehaviorStatusCounts" }
+        then: { $ref: "#/components/schemas/BehaviorStatusCounts" }
+        trend:
+          type: array
+          items:
+            type: object
+            properties:
+              at: { type: string, format: date-time }
+              verified: { type: integer }
+              total: { type: integer }
+        now_working: { $ref: "#/components/schemas/VerificationReportList" }
+        repaired: { $ref: "#/components/schemas/VerificationReportList" }
+        broke: { $ref: "#/components/schemas/VerificationReportList" }
+        still_failing: { $ref: "#/components/schemas/VerificationReportList" }
+        went_stale: { $ref: "#/components/schemas/VerificationReportList" }
+        sections_completed:
+          type: array
+          items:
+            type: object
+            properties:
+              section: { type: string }
+              total: { type: integer }
     VerificationSummary:
       type: object
       properties:
@@ -12657,6 +12737,7 @@ x-error-codes:
   validation.behavior_section: "`section` is not a section of this project's plan, or is not a string. Read the plan (takomo_plan_read or GET /v1/mindmaps/{id}) for node ids, send null to unlink, or leave it out for a behavior the specification does not state yet."
   validation.behavior_tests: "more linked tests than one behavior may carry. A behavior backed by that many tests is several behaviors."
   validation.behavior_status: "`status` filter must be `verified`, `failing`, `stale` or `untested`."
+  validation.report_days: "`days` for the verification report must be an integer from 1 to 90. Use 7 for a week or 30 for a month."
   validation.test_key: "a test key is empty, contains control characters, or is over its length bound. Use the identifier your runner reports, e.g. `playwright:editor.spec.ts › keeps edits`."
   validation.run_results: "`results` must be a non-empty array of `{test, outcome, detail?}` objects, within the per-run cap. Report a larger suite in several runs against the same commit."
   validation.run_outcome: "a result's `outcome` must be `pass` or `fail`. A test that could not run is a `fail` with the reason in `detail`; a skipped test is left out of the report."
