@@ -197,6 +197,8 @@ export type { ProposalPanelProps, ProposalPanelLabels } from './documents/Propos
 export { SectionPanel } from './documents/SectionPanel'
 export { DocumentHybridSearch, SearchExcerpt } from './documents/DocumentHybridSearch'
 export type { SectionPanelProps, SectionPanelLabels } from './documents/SectionPanel'
+export { SectionFocusBand, SectionFocusBreadcrumb } from './documents/SectionFocus'
+export type { SectionFocusBandProps, SectionFocusBreadcrumbProps } from './documents/SectionFocus'
 
 // ---- mindmaps ----
 export { Canvas } from './mindmap/Canvas'

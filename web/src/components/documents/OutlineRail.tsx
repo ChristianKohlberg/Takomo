@@ -27,6 +27,8 @@ export interface OutlineRailLabels {
   /** What the ◆ beside a row means. `{n}` is how many are waiting. */
   pending: string
   move?: string
+  /** "Show only this section", the outline context menu's focus entry. */
+  focusSection?: string
 }
 
 export interface OutlineRailProps {
@@ -37,6 +39,10 @@ export interface OutlineRailProps {
   /** Absent for read-only viewers. Pointer, keyboard and touch share one action. */
   onMove?: (key: string) => void
   onReorder?: (source: string, target: string, placement: SectionPlacement) => StructureResult
+  /** Section focus. When present, Shift+F10, the context menu and a long press
+   *  open a small menu (Move… and Show only this section) instead of going
+   *  straight to the Move dialog. */
+  onFocusSection?: (key: string) => void
   locale?: 'en' | 'de'
   numbering?: { h1: boolean; h2: boolean }
   /** Section keys this viewer has folded. Never shared. */
@@ -83,6 +89,7 @@ export function OutlineRail({
   onSelect,
   onMove,
   onReorder,
+  onFocusSection,
   locale = 'en',
   numbering = { h1: true, h2: true },
   collapsed,
@@ -101,6 +108,29 @@ export function OutlineRail({
   const [announcement, setAnnouncement] = useState('')
   const hold = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number } | null>(null)
   const suppressClick = useRef(false)
+  const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null)
+  const menuElement = useRef<HTMLDivElement>(null)
+  const hasMenu = !!onFocusSection
+  const openMenu = (key: string, point?: { x: number; y: number }) => {
+    const rect = rowElements.current.get(key)?.getBoundingClientRect()
+    setMenu({ key, x: point?.x ?? (rect ? rect.left + 16 : 0), y: point?.y ?? (rect ? rect.bottom : 0) })
+  }
+  const closeMenu = (restore: boolean) => {
+    const key = menu?.key
+    setMenu(null)
+    if (restore && key) rowElements.current.get(key)?.focus()
+  }
+  const contextAction = (key: string, point?: { x: number; y: number }) => {
+    if (hasMenu) openMenu(key, point)
+    else onMove?.(key)
+  }
+  useEffect(() => {
+    if (!menu) return
+    menuElement.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
+    const dismiss = (event: PointerEvent) => { if (!menuElement.current?.contains(event.target as Node)) setMenu(null) }
+    document.addEventListener('pointerdown', dismiss)
+    return () => document.removeEventListener('pointerdown', dismiss)
+  }, [menu])
   const cancelHold = () => { if (hold.current) clearTimeout(hold.current.timer); hold.current = null }
   useEffect(() => () => { if (hold.current) clearTimeout(hold.current.timer) }, [onMove])
   const branches = flattenSections(sections).filter(section => !collapsible || collapsible.has(section.key))
@@ -131,7 +161,7 @@ export function OutlineRail({
   return (
     // Anchor screen-reader labels here so they cannot extend the page beyond
     // the outline's scroll container and leave blank space below the app.
-    <><p id={instructions} className="sr-only">{de ? 'Pfeiltasten navigieren und öffnen oder schließen Abschnitte.' : 'Arrow keys navigate, expand and collapse sections.'} {onReorder && (de ? 'Zeilen zum Verschieben ziehen. Die Zeilenmitte macht den Abschnitt zum Unterabschnitt; die Ränder fügen ihn davor oder danach ein.' : 'Drag rows to move them. The middle makes a child section; the edges insert before or after.')} {onMove && (de ? 'Umschalt+F10 oder langes Drücken öffnet die Zielauswahl.' : 'Shift+F10 or a long press opens the destination picker.')}</p>
+    <><p id={instructions} className="sr-only">{de ? 'Pfeiltasten navigieren und öffnen oder schließen Abschnitte.' : 'Arrow keys navigate, expand and collapse sections.'} {onReorder && (de ? 'Zeilen zum Verschieben ziehen. Die Zeilenmitte macht den Abschnitt zum Unterabschnitt; die Ränder fügen ihn davor oder danach ein.' : 'Drag rows to move them. The middle makes a child section; the edges insert before or after.')} {hasMenu ? (de ? 'Umschalt+F10 oder langes Drücken öffnet das Abschnittsmenü.' : 'Shift+F10 or a long press opens the section menu.') : onMove && (de ? 'Umschalt+F10 oder langes Drücken öffnet die Zielauswahl.' : 'Shift+F10 or a long press opens the destination picker.')}</p>
     <div className="flex justify-end gap-1">
       <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent disabled:opacity-40" aria-label={de ? 'Alle Abschnitte aufklappen' : 'Expand all sections'} title={de ? 'Alle Abschnitte aufklappen' : 'Expand all sections'} disabled={!branches.some(section => collapsed.has(section.key))} onClick={() => branches.filter(section => collapsed.has(section.key)).forEach(section => onToggle(section.key))}><ChevronsUpDown aria-hidden="true" className="size-4" /></button>
       <button type="button" className="rounded p-1.5 text-muted-foreground hover:bg-accent disabled:opacity-40" aria-label={de ? 'Alle Abschnitte zuklappen' : 'Collapse all sections'} title={de ? 'Alle Abschnitte zuklappen' : 'Collapse all sections'} disabled={!branches.some(section => !collapsed.has(section.key))} onClick={() => branches.filter(section => !collapsed.has(section.key)).forEach(section => onToggle(section.key))}><ChevronsDownUp aria-hidden="true" className="size-4" /></button>
@@ -166,20 +196,20 @@ export function OutlineRail({
             onFocus={() => setFocused(section.key)}
             draggable={!!onReorder}
             onPointerDown={event => {
-              if (event.pointerType !== 'touch' || !onMove) return
+              if (event.pointerType !== 'touch' || !(onMove || hasMenu)) return
               cancelHold(); suppressClick.current = false
               const key = section.key
-              hold.current = { x: event.clientX, y: event.clientY, timer: setTimeout(() => { hold.current = null; suppressClick.current = true; onMove(key) }, 500) }
+              hold.current = { x: event.clientX, y: event.clientY, timer: setTimeout(() => { hold.current = null; suppressClick.current = true; contextAction(key) }, 500) }
             }}
             onPointerMove={event => { if (hold.current && Math.hypot(event.clientX - hold.current.x, event.clientY - hold.current.y) > 8) cancelHold() }}
             onPointerUp={cancelHold}
             onPointerCancel={cancelHold}
             onClickCapture={event => { if (suppressClick.current) { event.preventDefault(); event.stopPropagation(); suppressClick.current = false } }}
-            onContextMenu={event => { if (onMove) { event.preventDefault(); cancelHold(); clearDrag(); if (!suppressClick.current) onMove(section.key) } }}
+            onContextMenu={event => { if (onMove || hasMenu) { event.preventDefault(); cancelHold(); clearDrag(); if (!suppressClick.current) contextAction(section.key, event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined) } }}
             onKeyDown={event => {
               if (event.altKey || event.metaKey || event.ctrlKey) return
               const index = rows.findIndex(row => row.key === section.key)
-              if (event.key === 'F10' && event.shiftKey && onMove) { event.preventDefault(); onMove(section.key); return }
+              if (((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') && (onMove || hasMenu)) { event.preventDefault(); contextAction(section.key); return }
               if (event.shiftKey) return
               if (['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End', 'Enter', ' '].includes(event.key)) event.stopPropagation()
               if (event.key === 'ArrowDown') { event.preventDefault(); focus(rows[index + 1]?.key) }
@@ -288,6 +318,21 @@ export function OutlineRail({
           </li>
         )
       })}
-    </ul><p role="status" className="sr-only">{announcement}</p></>
+    </ul>
+    {menu && <div ref={menuElement} role="menu" aria-label={rowLabel(flattenSections(sections).find(section => section.key === menu.key) ?? { key: menu.key, number: '', depth: 0, title: '', children: [] })}
+      className="fixed z-50 flex min-w-48 flex-col rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md"
+      style={{ left: menu.x, top: menu.y }}
+      onKeyDown={event => {
+        const items = [...(menuElement.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])]
+        const index = items.indexOf(document.activeElement as HTMLElement)
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenu(true) }
+        else if (event.key === 'ArrowDown') { event.preventDefault(); items[(index + 1) % items.length]?.focus() }
+        else if (event.key === 'ArrowUp') { event.preventDefault(); items[(index - 1 + items.length) % items.length]?.focus() }
+        else if (event.key === 'Tab') closeMenu(false)
+      }}>
+      {onMove && <button type="button" role="menuitem" className="rounded px-2 py-1.5 text-left hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { const key = menu.key; closeMenu(false); onMove(key) }}>{labels.move ?? (de ? 'Abschnitt verschieben' : 'Move section')}…</button>}
+      {onFocusSection && <button type="button" role="menuitem" aria-keyshortcuts="Alt+F" className="rounded px-2 py-1.5 text-left hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { const key = menu.key; setMenu(null); onFocusSection(key) }}>{labels.focusSection ?? (de ? 'Nur diesen Abschnitt anzeigen' : 'Show only this section')}</button>}
+    </div>}
+    <p role="status" className="sr-only">{announcement}</p></>
   )
 }
