@@ -1244,7 +1244,7 @@ function ConnectedLive({
 
       <NodeDialog
         node={viewingNode}
-        previewContent={viewingNode && readProseOf(ydoc, viewingNode.id) ? <SavedProse node={{ ...viewingNode, prose_structure: fragmentStructure(readProseOf(ydoc, viewingNode.id)!) }} nodes={nodes} access={{ token, project: currentProject }} missing={nodeLabels.missingSection ?? 'Missing section'} /> : undefined}
+        previewContent={viewingNode && readProseOf(ydoc, viewingNode.id) ? <SavedProse node={{ ...viewingNode, prose_structure: fragmentStructure(readProseOf(ydoc, viewingNode.id)!) }} nodes={nodes} access={{ token, project: currentProject }} missing={nodeLabels.missingSection ?? 'Missing section'} locale={locale} /> : undefined}
         canWrite={canWrite}
         relations={viewingNode ? relationsFor(viewingNode.id) : []}
         titleOf={titleOf}

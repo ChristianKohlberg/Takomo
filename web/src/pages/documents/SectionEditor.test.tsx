@@ -327,3 +327,28 @@ it('crosses plain paragraph boundaries without altering prose and preserves nati
   expect(navigate).not.toHaveBeenCalled()
   view.unmount(); awareness.destroy(); doc.destroy()
 })
+
+describe('SectionEditor long tables', () => {
+  const tableHtml = (body: number) => `<table><tr><th><p>Name</p></th></tr>${Array.from({ length: body }, (_, index) => `<tr><td><p>row ${index + 1}</p></td></tr>`).join('')}</table>`
+  it('shows a long table collapsed to a read-only viewer, who can expand it without touching the document', () => {
+    const doc = new Y.Doc()
+    const fragment = section(doc, 'mn-1', 'Intro')
+    const provider = { awareness: new Awareness(doc) } as unknown as WebsocketProvider
+    let writer: Editor | null = null
+    const common = { ydoc: doc, fragment, provider, display: 'Ada', color: '#2563eb', onSettled: () => {}, label: 'Section 1' }
+    const first = render(<SectionEditor {...common} canWrite onEditor={value => { writer = value }} />)
+    act(() => { writer!.commands.setContent(`<p>Intro</p>${tableHtml(11)}`) })
+    first.unmount()
+
+    const stateVector = Y.encodeStateVector(doc)
+    render(<SectionEditor {...common} canWrite={false} locale="de" />)
+    const button = screen.getByRole('button', { name: 'Alle 11 Zeilen anzeigen' })
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    const table = document.getElementById(button.getAttribute('aria-controls')!)!
+    expect(table.tagName).toBe('TABLE')
+    expect(document.getElementById(table.getAttribute('aria-describedby')!)!.textContent).toBe('10 von 11 Zeilen angezeigt')
+    fireEvent.click(button)
+    expect(screen.getByRole('button', { name: 'Weniger anzeigen' }).getAttribute('aria-expanded')).toBe('true')
+    expect(Y.encodeStateVector(doc)).toEqual(stateVector)
+  })
+})

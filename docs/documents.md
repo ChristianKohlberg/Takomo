@@ -310,6 +310,24 @@ the editor's rich content, including paragraphs, lists, links, and formatted tex
 viewers see tables but cannot change them. These edits use the same Yjs document and undo
 history as prose; no separate table persistence exists.
 
+**Long tables start collapsed.** A table with more than 10 body rows (leading rows made only
+of header cells do not count) shows its first 10 body rows, fades out the last visible rows and
+offers **Show all N rows** / **Alle N Zeilen anzeigen**; expanded, **Show less** collapses it
+again. Like the collapsible block, this is local view state per reader: it is never written to
+the Yjs document, adds no node attribute and no undo entry, and a freshly mounted table starts
+collapsed. It stays expanded while the table is edited (locally or remotely). A table expands on
+its own when the selection moves into a hidden row (caret, arrow keys, cell selection, comment
+and search-passage links), when the active document-search hit lies in a hidden row, and when a
+pending proposal's highlight lands on the table or a block around it. The cut is made at the
+first row boundary at or after the tenth body row that no `rowspan` crosses, so a merged cell
+is never split; if a merged cell reaches the last row from before any such boundary, the table
+is shown whole. The toggle is a button with `aria-expanded`/`aria-controls`; hidden rows are
+removed from layout (and so from Tab order), and the table is described as "Showing 10 of N
+rows". Print shows every row. The same behaviour applies in writable and read-only editors
+(`web/src/lib/long-table-view.ts`, a subclass of Tiptap's `TableView`) and in the saved-prose
+projection used by the map view and specification history (`SavedProse`). General Markdown
+rendering (tickets, comments, conversations) is not a document view and is unchanged.
+
 A table is one top-level block with a stable `blk_…` id. Agent reads serialize tables as HTML
 inside the annotated Markdown, retaining header cells, `rowspan`, `colspan`, `colwidth`, and
 rich cell content. A proposal's `markdown` can contain this HTML table, including blank lines,

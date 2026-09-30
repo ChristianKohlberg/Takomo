@@ -1,4 +1,7 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { longTableCut, longTableLabels } from '@/lib/long-table'
+import type { Locale } from '@/lib/i18n'
+import '@/styles/document-long-table.css'
 import { createDiagramControls } from '@/lib/diagram-controls'
 import { diagramEngine, type DiagramAccess } from '@/lib/diagram'
 import { sectionBlocks, savedText, type SavedBlock } from '@/lib/saved-prose'
@@ -17,7 +20,31 @@ function SavedDiagram({ source, language, access }: { source: string; language: 
   }, [source, language, token, project])
   return <div ref={host} />
 }
-export function SavedProse({ node, nodes, access, missing }: { node: SavedSection; nodes: SavedSection[]; access: DiagramAccess; missing: string }) {
+/** A saved table; long ones start collapsed, as local view state (docs/documents.md "Tables"). */
+function SavedTable({ rows, render, locale }: { rows: SavedBlock[]; render: (block: SavedBlock, key: number) => ReactNode; locale: Locale }) {
+  const [expanded, setExpanded] = useState(false)
+  const id = useId()
+  const cut = longTableCut(rows.map(row => ({
+    header: !!row.children?.length && row.children.every(cell => cell.tag === 'tableHeader'),
+    rowspans: row.children?.map(cell => Math.max(1, Number(cell.attributes?.rowspan) || 1)) ?? [],
+  })))
+  const collapsed = !!cut && !expanded
+  const labels = longTableLabels(locale)
+  return <div className={cut ? 'document-long-table relative max-w-full overflow-auto' : 'max-w-full overflow-auto'} data-long-table={cut ? (collapsed ? 'collapsed' : 'expanded') : undefined}>
+    <table id={`${id}-table`} className="w-full border-collapse" aria-describedby={collapsed ? `${id}-status` : undefined}>
+      <tbody>{rows.map((row, index) => <tr key={index} className={collapsed && index >= cut.visibleRows ? 'document-long-table-hidden' : undefined}>{row.children?.map(render)}</tr>)}</tbody>
+    </table>
+    {cut && <div className="document-long-table-controls">
+      <div className="document-long-table-fade" aria-hidden="true" />
+      {collapsed && <span id={`${id}-status`} className="sr-only">{labels.status(cut.visibleBodyRows, cut.bodyRows)}</span>}
+      <button type="button" className="document-long-table-toggle" aria-expanded={!collapsed} aria-controls={`${id}-table`} onClick={() => setExpanded(!expanded)}>
+        {collapsed ? labels.showAll(cut.bodyRows) : labels.showLess}
+      </button>
+    </div>}
+  </div>
+}
+
+export function SavedProse({ node, nodes, access, missing, locale = 'en' }: { node: SavedSection; nodes: SavedSection[]; access: DiagramAccess; missing: string; locale?: Locale }) {
   const blocks = sectionBlocks(node)
   function render(block: SavedBlock, key: number): ReactNode {
     if (block.text) return <span key={key}>{block.text.map((run, index) => {
@@ -48,7 +75,7 @@ export function SavedProse({ node, nodes, access, missing }: { node: SavedSectio
       case 'collapsibleBlock': return <details key={key} className="rounded border p-2">{children}</details>
       case 'collapsibleSummary': return <summary key={key} className="cursor-pointer font-medium">{children}</summary>
       case 'collapsibleContent': return <div key={key} className="min-w-0 space-y-2">{children}</div>
-      case 'table': return <div key={key} className="max-w-full overflow-auto"><table className="w-full border-collapse"><tbody>{children}</tbody></table></div>
+      case 'table': return <SavedTable key={key} rows={(block.children ?? []).filter(row => row.tag === 'tableRow')} render={render} locale={locale} />
       case 'tableRow': return <tr key={key}>{children}</tr>
       case 'tableCell': return <td key={key} colSpan={span('colspan')} rowSpan={span('rowspan')} className="border p-2 align-top">{children}</td>
       case 'tableHeader': return <th key={key} colSpan={span('colspan')} rowSpan={span('rowspan')} className="border bg-muted p-2 text-left">{children}</th>
