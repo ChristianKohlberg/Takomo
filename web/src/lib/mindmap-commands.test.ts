@@ -47,8 +47,10 @@ describe('commandsFor', () => {
 
   it('puts the node scope first when a node is selected', () => {
     const ids = commandsFor(ctx({ node: node({ hasChildren: true }) }))
-    expect(ids.slice(0, 9)).toEqual([
+    expect(ids.slice(0, 11)).toEqual([
       'node.open',
+      'node.document',
+      'node.documentFocus',
       'node.child',
       'node.sibling',
       'node.rename',
@@ -73,14 +75,25 @@ describe('commandsFor', () => {
     // the only way to see its notes — so it survives where every write does not.
     expect(ids).toEqual([
       'node.open',
+      'node.document',
+      'node.documentFocus',
       'node.collapse',
-      'map.plan',
       'map.tests',
       'map.goto',
       'map.fit',
       'map.trust',
       'map.project',
     ])
+  })
+
+  it('offers the document once: under the node when one is in scope, else as the plan', () => {
+    const scoped = commandsFor(ctx({ node: node() }))
+    expect(scoped).toContain('node.document')
+    expect(scoped).toContain('node.documentFocus')
+    expect(scoped).not.toContain('map.plan')
+    const unscoped = commandsFor(ctx())
+    expect(unscoped).toContain('map.plan')
+    expect(unscoped).not.toContain('node.document')
   })
 
   it('does not offer to promote a branch that already graduated', () => {
@@ -274,8 +287,15 @@ describe('menuVerbsFor', () => {
     // Right-click is the one gesture that reaches a node without selecting it, so
     // opening one stays; everything that would write is gone.
     expect(menuVerbsFor(ctx({ canWrite: false, canManageMap: false, node: node() }))).toEqual([
+      'node.document',
+      'node.documentFocus',
       'node.open',
     ])
+  })
+
+  it('puts the way into the document first, above every editing verb', () => {
+    const verbs = menuVerbsFor(ctx({ node: node({ hasChildren: true }) }))
+    expect(verbs.slice(0, 3)).toEqual(['node.document', 'node.documentFocus', 'node.open'])
   })
 
   it('does not offer to promote a branch that already graduated', () => {

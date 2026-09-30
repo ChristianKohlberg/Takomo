@@ -30,6 +30,10 @@ import type { MapNode } from '@/lib/mindmap-doc'
 import { firstSentence, trustOf, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 
 export interface OutlineLabels {
+  /** Opens this thought's section in the document, selected and scrolled to. */
+  openInDocument?: string
+  /** Opens this thought's section alone, in the document's section focus. */
+  focusInDocument?: string
   /** Opens the reading-and-editing dialog on this row. */
   edit: string
   actions?: string
@@ -62,6 +66,11 @@ export interface OutlineLabels {
 
 export interface OutlineProps {
   onFocusBranch?: (id: string) => void
+  /** Navigation to the document view at this row's section. Offered on a
+   *  read-only token too: it reads, it never writes. */
+  onOpenInDocument?: (id: string) => void
+  /** The same, narrowed to the section in section focus. */
+  onFocusInDocument?: (id: string) => void
   focusLabel?: string
   searchMatches?: ReadonlySet<string>
   nodes: MapNode[]
@@ -96,6 +105,8 @@ export interface OutlineProps {
 
 export function Outline({
   onFocusBranch,
+  onOpenInDocument,
+  onFocusInDocument,
   focusLabel = 'Focus branch',
   searchMatches,
   nodes,
@@ -238,6 +249,8 @@ export function Outline({
             </PopoverTrigger>
             <PopoverContent align="end" className="w-52 gap-0 p-1" onCloseAutoFocus={event => { if (chose.current) event.preventDefault() }}>
               {[
+                ...(onOpenInDocument && labels.openInDocument ? [{ label: labels.openInDocument, action: () => onOpenInDocument(node.id) }] : []),
+                ...(onFocusInDocument && labels.focusInDocument ? [{ label: labels.focusInDocument, action: () => onFocusInDocument(node.id) }] : []),
                 { label: labels.edit, action: () => onEdit(node.id) },
                 ...(onFocusBranch ? [{ label: focusLabel, action: () => onFocusBranch(node.id) }] : []),
                 { label: labels.attachments.replace('{n}', String(node.attachments.length)), action: () => onAttachments(node.id) },

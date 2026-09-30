@@ -13,6 +13,8 @@
 //   * Scope is the selected node, else the map. Node commands come first
 //     because they are what somebody who selected a node came for.
 export const NODE_COMMANDS = [
+  'node.document',
+  'node.documentFocus',
   'node.child',
   'node.sibling',
   'node.open',
@@ -78,6 +80,10 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
     // the lines to other branches are, now that selecting a node no longer
     // throws a panel over the map — so it survives a read-only token.
     out.push('node.open')
+    // The same thought as a section of the document, either in place among the
+    // others or on its own (section focus). Navigation, so a read-only token
+    // has both.
+    out.push('node.document', 'node.documentFocus')
     if (ctx.canWrite) {
       out.push('node.child', 'node.sibling', 'node.rename')
       if (ctx.nodeCount >= 2) out.push('node.relate')
@@ -98,8 +104,9 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
   // so it is the one map command that is always offered: it survives a
   // read-only token (reading the plan is a read) and an empty map (which is a
   // plan with no sections rather than no plan). With a node selected it lands on
-  // that section; `spec/one-model-two-views.md`.
-  out.push('map.plan')
+  // that section; `spec/one-model-two-views.md`. With a node in scope that is
+  // exactly `node.document`, so it is offered once, under the node's name.
+  if (!n) out.push('map.plan')
   // The third view of the same tree: what has to pass before this part is done.
   // A read like the plan, and offered on the same terms — with a node selected
   // it lands filtered to that section.
@@ -238,9 +245,13 @@ export function pillVerbsFor(ctx: CommandContext): CommandId[] {
 export function menuVerbsFor(ctx: CommandContext): CommandId[] {
   const n = ctx.node
   if (!n) return []
-  // First, and unconditional: right-click is the one gesture that reaches a node
+  // First, and unconditional: the way from this thought to its section in the
+  // document, in place or focused. Both are navigation rather than edits, so a
+  // read-only token has them too.
+  const out: CommandId[] = ['node.document', 'node.documentFocus']
+  // Unconditional as well: right-click is the one gesture that reaches a node
   // without selecting it, so it has to be able to open one.
-  const out: CommandId[] = ['node.open']
+  out.push('node.open')
   if (ctx.canWrite) out.push('node.child', 'node.sibling', 'node.rename', 'node.attach')
   if (n.collapsed) out.push('node.expand')
   else if (n.hasChildren) out.push('node.collapse')
