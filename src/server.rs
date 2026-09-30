@@ -331,6 +331,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // exists and what keeps it contained. Off unless a key is configured;
         // everything else on /documents works without it.
         .route("/v1/documents/{id}/run", post(crate::api::docs::run_agent))
+        .route(
+            "/v1/documents/{id}/proposals/{proposal}/accept",
+            post(crate::api::docs::accept_proposal),
+        )
+        .route(
+            "/v1/documents/{id}/proposals/{proposal}/reject",
+            post(crate::api::docs::reject_proposal),
+        )
         .route("/v1/documents/{id}/reset", post(crate::api::docs::reset))
         .route("/v1/mindmaps/{id}/reset", post(crate::api::mindmaps::reset))
         .route("/v1/initiatives/{id}/reset", post(crate::api::initiatives::reset))
@@ -566,6 +574,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/mindmaps/{id}/proposals",
             get(crate::api::mindmaps::proposals).post(crate::api::mindmaps::propose),
+        )
+        // Deciding on one. A browser decides in the CRDT directly; these are
+        // for an agent, which applies it server-side on the live replica.
+        .route(
+            "/v1/mindmaps/{id}/proposals/{proposal}/accept",
+            post(crate::api::mindmaps::accept_proposal),
+        )
+        .route(
+            "/v1/mindmaps/{id}/proposals/{proposal}/reject",
+            post(crate::api::mindmaps::reject_proposal),
         )
         // What happened to the plan, and who did it.
         .route("/v1/mindmaps/{id}/versions", get(crate::api::spec_history::list))

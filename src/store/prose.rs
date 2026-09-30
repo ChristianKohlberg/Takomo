@@ -1,10 +1,11 @@
 //! A section's prose, as plain text.
 //!
-//! The standing rule in this codebase is that Rust reads the CRDT and the
-//! browser applies changes to it — `markdown → ProseMirror` needs the editor's
-//! exact schema and only the editor has it. That rule is about *editing*: an
-//! agent's ops land as a proposal precisely so nobody's live text is rewritten
-//! by a process that does not know the schema.
+//! The standing rule in this codebase is that Rust reads the CRDT and changes
+//! prose only through a converter held to the editor's schema — the browser's
+//! `markdownToNodes`, or its fixture-checked twin `api::proposal_apply` when an
+//! agent accepts a proposal. That rule is about *editing*: an agent's ops land
+//! as a proposal precisely so nobody's live text is rewritten by a process that
+//! does not know the schema.
 //!
 //! This is the one case the rule does not cover, and the reason has CHANGED —
 //! the paragraph here used to justify it by the mindmap-to-document conversion,

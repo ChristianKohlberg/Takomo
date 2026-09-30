@@ -283,19 +283,23 @@ made of. The CRDT update log cannot answer that: compaction rewrites it into one
 blob by design.
 
 A caller may record only `edited`, `reviewed`, `accepted` and `rejected` — the
-four the server cannot observe. It records what it performs itself, so nobody
+four the server cannot observe when they happen in a browser (an agent's
+accept or reject through the API is recorded by the server itself). It records what it performs itself, so nobody
 can claim to have moved a node they did not move. An entry whose `node` is null
 is an act against the plan as a whole: a reset (`POST /v1/mindmaps/{id}/reset`)
 records one `pruned` act with no section, in the same transaction that clears
 them, and leaves every earlier entry in place.
 
-### An agent proposes; a person accepts
+### An agent proposes; somebody decides
 
-Unchanged, and only re-aimed. An agent reads a section annotated with block ids
-(`takomo_plan_read`) and replies with OPERATIONS against those ids
-(`takomo_plan_propose`) — never with a document, which is what keeps somebody's
-concurrent typing. Nothing is live until a person accepts it in the document
-view.
+An agent reads a section annotated with block ids (`takomo_plan_read`) and
+replies with OPERATIONS against those ids (`takomo_plan_propose`) — never with a
+document, which is what keeps somebody's concurrent typing. Nothing is live until
+it is accepted: by a person in the document view, or by an agent through
+`takomo_plan_accept` / `POST /v1/mindmaps/{id}/proposals/{proposal}/accept`,
+which applies the ops server-side on the live replica and records the agent as
+`decided_by`. See [Documents](documents.md#the-agent-accept-path) for what
+guards that path.
 
 ## Attachments — a pointer, never the file
 

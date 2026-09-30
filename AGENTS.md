@@ -28,9 +28,13 @@ with a React/TypeScript frontend embedded in the server binary.
 - List routes are bounded envelopes with accurate totals and truncation information.
 - Errors have stable codes, actionable messages, and remedies. OAuth uses its
   protocol-specific error contract; consult `spec/auth.md` before changing it.
-- Document agent edits are proposals against block IDs; humans accept or reject
-  them. Preserve concurrent CRDT edits and batch persistence rather than writing
-  SQLite on every keystroke. See `docs/documents.md`.
+- Document agent edits are proposals against block IDs. A person accepts or rejects
+  them in the browser, or a `write`-scoped agent through the explicit accept/reject
+  routes, which apply server-side on the live replica via `src/api/proposal_apply.rs`;
+  that converter must match the browser's (`tests/fixtures/proposal-markdown.json`,
+  regenerated from `web/src/lib/proposal-parity.test.ts`) or refuse. Preserve
+  concurrent CRDT edits and batch persistence rather than writing SQLite on every
+  keystroke. See `docs/documents.md`.
 - Verification is behaviors linked to external test keys plus reported runs.
   Behavior status is computed from the latest results on read, never stored.
   Behaviors restate the specification; agents must not invent requirements.
