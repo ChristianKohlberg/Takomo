@@ -11,8 +11,12 @@ fit this terminology. Requirements are individual obligations within it.
 
 ## Verification
 
-Use **Verification and Evidence** for the workspace destination previously
-called Tests. Verification checks whether the specified expectations hold;
+The workspace destination is called **Promises** (German: *Zusagen*); it was
+earlier called Tests, then Verification and Evidence. Its screen speaks from
+the reader's side: a behavior is a *promise*, a test is *evidence* for it, and
+the statuses read *works*, *doesn't work*, *not checked lately* and *never
+checked*. The API and this document keep the terms below. Verification checks
+whether the specified expectations hold;
 it includes behavior and other specified qualities such as layout,
 accessibility, performance, and technical constraints.
 

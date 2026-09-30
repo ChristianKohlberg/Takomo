@@ -414,6 +414,13 @@ async fn scope_project_and_archive_guards_hold() {
         s == StatusCode::FORBIDDEN || s == StatusCode::NOT_FOUND,
         "{s}"
     );
+    let (s, _) = app
+        .get(&outsider, "/v1/projects/tp/verification/report")
+        .await;
+    assert!(
+        s == StatusCode::FORBIDDEN || s == StatusCode::NOT_FOUND,
+        "{s}"
+    );
 
     let (s, _) = app
         .post(&app.admin, "/v1/projects/tp/archive", json!({}))
@@ -584,4 +591,129 @@ async fn link_and_unlink_compose_with_concurrent_edits() {
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
     assert_eq!(bad["code"], "validation.test_key");
+}
+
+/// The report compares each behavior now with the start of the period and
+/// names what moved: newly working, repaired, broke, still failing, stale.
+#[tokio::test]
+async fn the_report_names_what_changed_in_the_period() {
+    let app = TestApp::spawn().await;
+    const DAY: i64 = 86_400_000;
+    let node = section(&app).await;
+    let run = |r: Value| r["run"]["id"].as_str().unwrap().to_string();
+    let id = |b: &Value| b["id"].as_str().unwrap().to_string();
+    let ids = |list: &Value| -> Vec<String> {
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let fresh = behavior(
+        &app,
+        json!({ "title": "Fresh", "tests": ["t:fresh"], "section": node }),
+    )
+    .await;
+    let fixed = behavior(&app, json!({ "title": "Fixed", "tests": ["t:fixed"] })).await;
+    let broken = behavior(&app, json!({ "title": "Broken", "tests": ["t:broken"] })).await;
+    let steady = behavior(&app, json!({ "title": "Steady", "tests": ["t:steady"] })).await;
+    let aged = behavior(&app, json!({ "title": "Aged", "tests": ["t:aged"] })).await;
+    // Behaviors are created now; backdate them so they existed last week.
+    {
+        let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+        conn.execute(
+            "UPDATE behaviors SET created_at = created_at - ?1",
+            rusqlite::params![40 * DAY],
+        )
+        .unwrap();
+    }
+
+    // Ten days ago: fixed failed, broken and steady passed; aged passed 16 days ago.
+    let old = report(
+        &app,
+        json!({ "results": [
+            { "test": "t:fixed", "outcome": "fail" },
+            { "test": "t:broken", "outcome": "pass" },
+            { "test": "t:steady", "outcome": "pass" },
+        ] }),
+    )
+    .await;
+    app.backdate_run(&run(old), 10 * DAY);
+    let older = report(
+        &app,
+        json!({ "results": [{ "test": "t:aged", "outcome": "pass" }] }),
+    )
+    .await;
+    app.backdate_run(&run(older), 16 * DAY);
+    // This week: fresh and fixed pass, broken fails, steady passes again.
+    let mid = report(
+        &app,
+        json!({ "results": [{ "test": "t:broken", "outcome": "fail" }] }),
+    )
+    .await;
+    app.backdate_run(&run(mid), 2 * DAY);
+    report(
+        &app,
+        json!({ "results": [
+            { "test": "t:fresh", "outcome": "pass" },
+            { "test": "t:fixed", "outcome": "pass" },
+            { "test": "t:broken", "outcome": "fail", "detail": "button enabled" },
+            { "test": "t:steady", "outcome": "pass" },
+        ] }),
+    )
+    .await;
+
+    let (s, r) = app
+        .get(&app.worker, "/v1/projects/tp/verification/report")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["days"], 7);
+    assert_eq!(ids(&r["now_working"]), vec![id(&fresh)]);
+    assert_eq!(ids(&r["repaired"]), vec![id(&fixed)]);
+    assert_eq!(ids(&r["broke"]), vec![id(&broken)]);
+    assert_eq!(r["still_failing"]["total"], 0);
+    assert_eq!(ids(&r["went_stale"]), vec![id(&aged)]);
+    assert!(!ids(&r["now_working"]).contains(&id(&steady)));
+    // The failure is dated from its first fail, two days ago, not the latest.
+    let broke_at =
+        chrono::DateTime::parse_from_rfc3339(r["broke"]["items"][0]["at"].as_str().unwrap())
+            .unwrap()
+            .timestamp_millis();
+    let age = chrono::Utc::now().timestamp_millis() - broke_at;
+    assert!((2 * DAY - 60_000..2 * DAY + 60_000).contains(&age), "{age}");
+    assert_eq!(
+        r["sections_completed"],
+        json!([{ "section": node, "total": 1 }])
+    );
+    assert_eq!(
+        r["now"],
+        json!({ "total": 5, "verified": 3, "failing": 1, "stale": 1, "untested": 0 })
+    );
+    assert_eq!(
+        r["then"],
+        json!({ "total": 5, "verified": 3, "failing": 1, "stale": 0, "untested": 1 })
+    );
+    let trend = r["trend"].as_array().unwrap();
+    assert_eq!(trend.len(), 5);
+    assert_eq!(trend[4]["verified"], 3);
+    assert_eq!(trend[3]["verified"], 3);
+    assert_eq!(trend[0]["verified"], 0);
+
+    // The list carries the failure's detail, so a row can say what happened.
+    let (_, list) = app
+        .get(&app.worker, "/v1/projects/tp/behaviors?status=failing")
+        .await;
+    assert_eq!(list["items"][0]["last_result"]["detail"], "button enabled");
+
+    let (s, e) = app
+        .get(&app.worker, "/v1/projects/tp/verification/report?days=0")
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.report_days");
+    let (s, _) = app
+        .get(&app.worker, "/v1/projects/tp/verification/report?days=30")
+        .await;
+    assert_eq!(s, StatusCode::OK);
 }

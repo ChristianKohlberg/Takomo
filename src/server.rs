@@ -354,6 +354,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(crate::api::behaviors::summary),
         )
         .route(
+            "/v1/projects/{project}/verification/report",
+            get(crate::api::behaviors::report_changes),
+        )
+        .route(
             "/v1/projects/{project}/document-appearance",
             put(crate::api::projects::put_document_appearance),
         )

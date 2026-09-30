@@ -13,7 +13,7 @@ export const STR = defineStrings({
     initiatives: 'Initiatives',
     mindmaps: 'Mindmaps',
     schedules: 'Schedules',
-    verification: 'Verification and Evidence',
+    verification: 'Promises',
     environments: 'Environments',
 
     gateTokenSub: "An admin token. Without 'admin' this page has nothing to show you.",
@@ -295,7 +295,7 @@ export const STR = defineStrings({
     initiatives: 'Initiativen',
     mindmaps: 'Mindmaps',
     schedules: 'Zeitpläne',
-    verification: 'Verifizierung und Nachweise',
+    verification: 'Zusagen',
     environments: 'Umgebungen',
 
     gateTokenSub: "Ein Admin-Token. Ohne 'admin' hat diese Seite nichts zu zeigen.",

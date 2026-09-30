@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronRight, Copy, Link2, Pencil, X } from 'lucide-react'
+import { ChevronRight, CircleCheck, CircleX, Copy, Link2, Pencil, UserCheck, X } from 'lucide-react'
 import { Markdown } from '@/components/Markdown'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,7 +9,9 @@ import {
   deleteBehavior,
   describeTest,
   getBehavior,
+  manualKey,
   patchBehavior,
+  reportRun,
   type BehaviorDetail as Detail,
   type BehaviorStatus,
   type HistoryEntry,
@@ -40,6 +42,8 @@ export function kindLabel(kind: TestKind, t: Labels): string {
       return t.kindContract
     case 'agent':
       return t.kindAgent
+    case 'manual':
+      return t.kindManual
     case 'other':
       return t.kindOther
   }
@@ -53,12 +57,13 @@ function testStatus(item: TestResult, freshDays: number, now: number): BehaviorS
 }
 
 /**
- * One behavior, opened in place under its row. What it says comes first, then
- * the tests that show it and what each last reported; the edit form, the run
- * history and the raw test keys wait behind a click.
+ * One promise, opened in place under its row. What it promises comes first,
+ * then the evidence that shows it and its track record; checking it by hand,
+ * the edit form, every check and the raw test keys wait behind a click.
  */
 export function BehaviorDetail({
   token,
+  project,
   id,
   nodes,
   canWrite,
@@ -70,6 +75,7 @@ export function BehaviorDetail({
   onError,
 }: {
   token: string
+  project: string
   id: string
   nodes: PlanNode[]
   canWrite: boolean
@@ -92,6 +98,8 @@ export function BehaviorDetail({
   const [showHistory, setShowHistory] = useState(false)
   const [showTechnical, setShowTechnical] = useState(false)
   const [copied, setCopied] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [checkText, setCheckText] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const epoch = useRef(0)
@@ -244,57 +252,85 @@ export function BehaviorDetail({
     })
   }
 
+  // A check by hand is a run like any other, under this promise's own manual
+  // key, so the status, the track record and the freshness rule stay one thing.
+  const recordCheck = async (outcome: 'pass' | 'fail') => {
+    const key = manualKey(id)
+    setBusy(true)
+    setMessage('')
+    try {
+      if (!detail.tests.includes(key)) await patchBehavior(token, id, { add_tests: [key] })
+      const detailText = checkText.trim()
+      await reportRun(token, project, {
+        note: t.checkNote,
+        results: [{ test: key, outcome, ...(detailText ? { detail: detailText } : {}) }],
+      })
+      setChecking(false)
+      setCheckText('')
+      setMessage(t.checkSaved)
+      await load()
+      onChanged()
+    } catch (error) {
+      onError(error)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
-    <div className="grid min-w-0 gap-4">
-      {detail.statement && <Markdown text={detail.statement} className="text-sm" />}
+    <div className="grid min-w-0 gap-5">
+      {detail.statement && (
+        <section className="grid gap-1" aria-label={t.promise}>
+          <h3 className="text-muted-foreground m-0 text-[11px] font-semibold tracking-wider uppercase">{t.promise}</h3>
+          <Markdown text={detail.statement} className="max-w-[68ch] text-sm" />
+        </section>
+      )}
 
       <section className="grid gap-2" aria-label={t.shownBy}>
-        <div>
-          <h3 className="m-0 text-xs font-semibold tracking-wide uppercase">{t.shownBy}</h3>
-          <p className="text-muted-foreground m-0 text-xs">{t.derivation.replace('{days}', String(freshDays))}</p>
-        </div>
+        <h3 className="text-muted-foreground m-0 text-[11px] font-semibold tracking-wider uppercase">{t.shownBy}</h3>
         {detail.test_results.length === 0 ? (
-          <p className="text-muted-foreground m-0 text-sm">{t.sumNoTests}</p>
+          <p className="text-muted-foreground m-0 text-sm">{t.noTests}</p>
         ) : (
-          <ul className="border-border m-0 ml-2 grid list-none gap-2 border-l-2 p-0 pl-4">
+          <ul className="m-0 grid list-none gap-2.5 p-0">
             {detail.test_results.map((item) => {
               const test = describeTest(item.test)
+              const name = test.kind === 'manual' ? t.manualName : test.name
               const status = testStatus(item, freshDays, now)
               return (
-                <li
-                  key={item.test}
-                  className="before:border-border relative min-w-0 before:absolute before:top-2.5 before:-left-4 before:w-3 before:border-t-2"
-                >
-                  <div className="flex min-w-0 items-start gap-2">
-                    <StatusIcon status={status} className="mt-0.5" />
-                    <div className="min-w-0 flex-1">
-                      <p className="m-0 text-sm break-words">{test.name}</p>
-                      <p className="text-muted-foreground m-0 text-xs">
-                        {kindLabel(test.kind, t)}
-                        {' · '}
-                        {item.latest
-                          ? `${item.latest.outcome === 'pass' ? t.pass : t.fail} ${t.ago.replace('{age}', fmtAge(item.latest.at, now))}`
-                          : t.neverReported}
-                      </p>
-                      {item.latest?.outcome === 'fail' && item.latest.detail && (
-                        <p className="bg-nfbg text-nf m-0 mt-1 rounded-md px-2 py-1 text-xs break-words whitespace-pre-wrap">
-                          {item.latest.detail}
-                        </p>
-                      )}
-                    </div>
-                    {canWrite && (
-                      <button
-                        type="button"
-                        aria-label={t.removeTest.replace('{test}', test.name)}
-                        title={t.removeTest.replace('{test}', test.name)}
-                        className="text-muted-foreground hover:text-foreground cursor-pointer rounded p-0.5"
-                        disabled={busy}
-                        onClick={() => void save({ remove_tests: [item.test] })}
+                <li key={item.test} className="flex min-w-0 items-start gap-2">
+                  <StatusIcon status={status} className="mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <p className="m-0 text-sm break-words">{name}</p>
+                    <p className="text-muted-foreground m-0 text-xs">
+                      {kindLabel(test.kind, t)}
+                      {' · '}
+                      {item.latest
+                        ? `${item.latest.outcome === 'pass' ? t.pass : t.fail} ${t.ago.replace('{age}', fmtAge(item.latest.at, now))}`
+                        : t.neverReported}
+                    </p>
+                    {item.latest?.detail && (
+                      <p
+                        className={cn(
+                          'm-0 mt-1 rounded-md px-2 py-1 text-xs break-words whitespace-pre-wrap',
+                          item.latest.outcome === 'fail' ? 'bg-nfbg text-nf' : 'bg-muted text-muted-foreground',
+                        )}
                       >
-                        <X className="size-3.5" aria-hidden="true" />
-                      </button>
+                        {item.latest.detail}
+                      </p>
                     )}
                   </div>
+                  {canWrite && (
+                    <button
+                      type="button"
+                      aria-label={t.removeTest.replace('{test}', name)}
+                      title={t.removeTest.replace('{test}', name)}
+                      className="text-muted-foreground hover:text-foreground cursor-pointer rounded p-0.5"
+                      disabled={busy}
+                      onClick={() => void save({ remove_tests: [item.test] })}
+                    >
+                      <X className="size-3.5" aria-hidden="true" />
+                    </button>
+                  )}
                 </li>
               )
             })}
@@ -326,6 +362,36 @@ export function BehaviorDetail({
         )}
       </section>
 
+      <TrackRecord entries={detail.history} t={t} now={now} />
+
+      {checking && (
+        <form
+          className="bg-muted/50 grid gap-2 rounded-lg p-3"
+          aria-label={t.checkByHand}
+          onSubmit={(event) => event.preventDefault()}
+        >
+          <p className="m-0 text-sm">{t.checkPrompt}</p>
+          <Input
+            autoFocus
+            aria-label={t.checkNotePh}
+            placeholder={t.checkNotePh}
+            value={checkText}
+            onChange={(event) => setCheckText(event.target.value)}
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" className="text-ok" disabled={busy} onClick={() => void recordCheck('pass')}>
+              <CircleCheck className="size-3.5" aria-hidden="true" /> {t.checkWorks}
+            </Button>
+            <Button type="button" size="sm" variant="outline" className="text-nf" disabled={busy} onClick={() => void recordCheck('fail')}>
+              <CircleX className="size-3.5" aria-hidden="true" /> {t.checkBroken}
+            </Button>
+            <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setChecking(false)}>
+              {t.cancel}
+            </Button>
+          </div>
+        </form>
+      )}
+
       <div className="flex flex-wrap items-center gap-x-1 gap-y-2 border-t pt-3">
         {canWrite && (
           <>
@@ -337,7 +403,17 @@ export function BehaviorDetail({
                 <Link2 className="size-3.5" aria-hidden="true" /> {t.linkTest}
               </Button>
             )}
+            {!checking && (
+              <Button size="sm" variant="ghost" onClick={() => setChecking(true)}>
+                <UserCheck className="size-3.5" aria-hidden="true" /> {t.checkByHand}
+              </Button>
+            )}
           </>
+        )}
+        {message && (
+          <span role="status" className="text-muted-foreground px-2 text-xs">
+            {message}
+          </span>
         )}
         <span className="grow" />
         <Disclosure open={showHistory} onToggle={() => setShowHistory((v) => !v)} label={t.history} />
@@ -367,9 +443,59 @@ export function BehaviorDetail({
           <p className="text-muted-foreground m-0">
             <code>{detail.id}</code> · {t.createdBy.replace('{actor}', detail.created_by)}
           </p>
+          <p className="text-muted-foreground m-0">{t.freshness.replace('{days}', String(freshDays))}</p>
         </section>
       )}
     </div>
+  )
+}
+
+/** Checks newest first, one per run: a run fails when any of its results failed. */
+function runsOf(entries: HistoryEntry[]): { run: string; at: string; outcome: 'pass' | 'fail' }[] {
+  const runs: { run: string; at: string; outcome: 'pass' | 'fail' }[] = []
+  for (const entry of entries) {
+    const last = runs[runs.length - 1]
+    if (last && last.run === entry.run) {
+      if (entry.outcome === 'fail') last.outcome = 'fail'
+    } else runs.push({ run: entry.run, at: entry.at, outcome: entry.outcome })
+  }
+  return runs
+}
+
+/** STRIP_RUNS checks as a row of marks, oldest first, and one sentence about the streak. */
+const STRIP_RUNS = 14
+
+function TrackRecord({ entries, t, now }: { entries: HistoryEntry[]; t: Labels; now: number }) {
+  const runs = runsOf(entries)
+  let sentence = t.lifeNever
+  if (runs.length) {
+    const head = runs[0]!.outcome
+    const streak = runs.findIndex((r) => r.outcome !== head)
+    const n = streak === -1 ? runs.length : streak
+    if (head === 'pass') sentence = n === 1 ? t.lifeStreakOne : t.lifeStreak.replace('{n}', String(n))
+    else {
+      sentence = n === 1 ? t.lifeFailingOne : t.lifeFailing.replace('{n}', String(n))
+      const worked = streak === -1 ? null : runs[streak]
+      if (worked) sentence += ` ${t.lifeLastWorked.replace('{age}', fmtAge(worked.at, now))}`
+    }
+  }
+  const strip = runs.slice(0, STRIP_RUNS).reverse()
+  return (
+    <section className="grid gap-1.5" aria-label={t.lifeLabel}>
+      <h3 className="text-muted-foreground m-0 text-[11px] font-semibold tracking-wider uppercase">{t.lifeLabel}</h3>
+      {strip.length > 0 && (
+        <div className="flex flex-wrap gap-0.5" role="img" aria-label={t.lifeStrip.replace('{n}', String(strip.length))}>
+          {strip.map((r) => (
+            <span
+              key={r.run}
+              title={`${r.outcome === 'pass' ? t.pass : t.fail} · ${t.ago.replace('{age}', fmtAge(r.at, now))}`}
+              className={cn('h-4 w-2.5 rounded-sm', r.outcome === 'pass' ? 'bg-ok' : 'bg-nf')}
+            />
+          ))}
+        </div>
+      )}
+      <p className="text-muted-foreground m-0 text-sm">{sentence}</p>
+    </section>
   )
 }
 

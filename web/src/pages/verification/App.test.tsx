@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Behavior, BehaviorDetail, VerificationSummary } from '@/lib/behaviors'
+import type { Behavior, BehaviorDetail, VerificationReport, VerificationSummary } from '@/lib/behaviors'
 import { TestsView } from './App'
 
 const mocks = vi.hoisted(() => ({
@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   createBehavior: vi.fn(),
   patchBehavior: vi.fn(),
   deleteBehavior: vi.fn(),
+  fetchReport: vi.fn(),
+  reportRun: vi.fn(),
   refreshVerification: vi.fn(),
   openBehavior: vi.fn(),
   onError: vi.fn(),
@@ -24,6 +26,8 @@ vi.mock('@/lib/behaviors', async (original) => ({
   createBehavior: mocks.createBehavior,
   patchBehavior: mocks.patchBehavior,
   deleteBehavior: mocks.deleteBehavior,
+  fetchReport: mocks.fetchReport,
+  reportRun: mocks.reportRun,
 }))
 vi.mock('@/hooks/useProjectUpdates', async (original) => ({
   ...(await original<typeof import('@/hooks/useProjectUpdates')>()),
@@ -65,6 +69,25 @@ function behavior(over: Partial<Behavior> = {}): Behavior {
   }
 }
 const counts = (over = {}) => ({ total: 0, verified: 0, failing: 0, stale: 0, untested: 0, ...over })
+const list = (items: VerificationReport['broke']['items'] = []) => ({ items, total: items.length, limit: 100 })
+function report(over: Partial<VerificationReport> = {}): VerificationReport {
+  return {
+    days: 7,
+    since: now,
+    until: now,
+    fresh_days: 14,
+    now: counts({ total: 2, verified: 1, failing: 1 }),
+    then: counts({ total: 2, untested: 2 }),
+    trend: [0, 0, 0, 0, 1].map((verified) => ({ at: now, verified, total: 2 })),
+    now_working: list(),
+    repaired: list(),
+    broke: list(),
+    still_failing: list(),
+    went_stale: list(),
+    sections_completed: [],
+    ...over,
+  }
+}
 
 function show(url = '/projects/demo/specification?view=tests') {
   return render(
@@ -95,27 +118,31 @@ beforeEach(() => {
     limit: 500,
   })
   mocks.refreshVerification.mockResolvedValue(null)
+  mocks.fetchReport.mockResolvedValue(report())
 })
 afterEach(cleanup)
 
 describe('TestsView', () => {
   it('reads top down: overall progress, then sections, then behaviors in plain words', async () => {
     show()
-    expect(await screen.findByText('1 of 2 behaviors verified')).toBeTruthy()
-    expect(screen.getByText(/No test run reported yet\./)).toBeTruthy()
+    expect(await screen.findByText('1 of 2 promises work')).toBeTruthy()
+    expect(screen.getByText(/Nothing has been checked yet\./)).toBeTruthy()
     const sections = screen.getAllByRole('button', { name: /^Show or hide/ })
     // The section with a failure comes first; the fully verified one starts folded.
     expect(sections.map((b) => b.getAttribute('aria-label'))).toEqual(['Show or hide Sharing', 'Show or hide Saving'])
     expect(sections[0]!.getAttribute('aria-expanded')).toBe('true')
     expect(sections[1]!.getAttribute('aria-expanded')).toBe('false')
-    expect(screen.getByText('0/1 verified')).toBeTruthy()
+    expect(screen.getByText('0 of 1 work · 1 not working')).toBeTruthy()
+    expect(screen.getByText('All 1 work')).toBeTruthy()
     const failing = screen.getByText('Share link opens read-only').closest('button')!
-    expect(within(failing).getByText('No test linked yet')).toBeTruthy()
+    expect(within(failing).getByText("Doesn't work")).toBeTruthy()
     expect(screen.queryByText('Failed save keeps edits')).toBeNull()
 
     fireEvent.click(sections[1]!)
     const verified = screen.getByText('Failed save keeps edits').closest('button')!
-    expect(within(verified).getByText(/^Passed \d+s ago$/)).toBeTruthy()
+    // The row tells the promise itself, then whether it holds and since when.
+    expect(within(verified).getByText('When saving fails, edits stay.')).toBeTruthy()
+    expect(within(verified).getByText(/^checked \d+s ago$/)).toBeTruthy()
     // No test keys on the list: they wait until a behavior is opened.
     expect(screen.queryByText(/playwright:/)).toBeNull()
   })
@@ -125,13 +152,13 @@ describe('TestsView', () => {
     await screen.findByText('Share link opens read-only')
     const chips = within(screen.getByRole('group', { name: 'Filter by status' }))
     expect(chips.getByRole('button', { name: /All\s*2/ })).toBeTruthy()
-    fireEvent.click(chips.getByRole('button', { name: /Verified\s*1/ }))
+    fireEvent.click(chips.getByRole('button', { name: /^Works\s*1/ }))
     expect(screen.queryByText('Share link opens read-only')).toBeNull()
     // A filter opens the folded section it looks into.
     expect(screen.getByText('Failed save keeps edits')).toBeTruthy()
     fireEvent.click(chips.getByRole('button', { name: /All\s*2/ }))
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Search behaviors' }), { target: { value: 'nothing like it' } })
-    expect(screen.getByText('No behaviors match these filters.')).toBeTruthy()
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search promises' }), { target: { value: 'nothing like it' } })
+    expect(screen.getByText('No promises match these filters.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
     expect(screen.getByText('Share link opens read-only')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Refresh/ })).toBeNull()
@@ -141,8 +168,8 @@ describe('TestsView', () => {
     show('/projects/demo/specification?view=tests&section=mn-share')
     expect(await screen.findByText('Share link opens read-only')).toBeTruthy()
     expect(screen.queryByText('Failed save keeps edits')).toBeNull()
-    expect(screen.getByText('0 of 1 behaviors verified')).toBeTruthy()
-    expect(screen.queryByText(/reported tests belong to no behavior/)).toBeNull()
+    expect(screen.getByText('0 of 1 promises in this section work')).toBeTruthy()
+    expect(screen.queryByText(/reported tests belong to no promise/)).toBeNull()
   })
 
   it('opens a behavior in place when its row is chosen, and closes it again', async () => {
@@ -166,13 +193,14 @@ describe('TestsView', () => {
     mocks.getBehavior.mockResolvedValue(detail)
     mocks.patchBehavior.mockResolvedValue(behavior())
     show('/projects/demo/specification?view=tests&behavior=bhv-save')
-    const shownBy = await screen.findByRole('region', { name: 'Shown by' })
-    expect(screen.getByText('When saving fails, edits stay.')).toBeTruthy()
+    const shownBy = await screen.findByRole('region', { name: 'How we know' })
+    expect(within(screen.getByRole('region', { name: 'The promise' })).getByText('When saving fails, edits stay.')).toBeTruthy()
     expect(within(shownBy).getByText('keeps edits')).toBeTruthy()
-    expect(within(shownBy).getByText(/^Browser · failed \d+s ago$/)).toBeTruthy()
+    expect(within(shownBy).getByText(/^Clicked through in a browser · failed \d+s ago$/)).toBeTruthy()
     expect(within(shownBy).getByText('Timeout after 5s')).toBeTruthy()
     expect(within(shownBy).getByText('save conflict')).toBeTruthy()
-    expect(within(shownBy).getByText('Unit · never reported')).toBeTruthy()
+    expect(within(shownBy).getByText('Code check · never checked')).toBeTruthy()
+    expect(screen.getByText('The last check failed.')).toBeTruthy()
     // Raw keys, the run history and the edit form are one click away, not on screen.
     expect(screen.queryByText('cargo:api::save_conflict')).toBeNull()
     expect(screen.queryByText('nightly')).toBeNull()
@@ -180,7 +208,7 @@ describe('TestsView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Technical details' }))
     expect(screen.getByText('cargo:api::save_conflict')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+    fireEvent.click(screen.getByRole('button', { name: 'All checks' }))
     expect(screen.getByText('nightly')).toBeTruthy()
 
     fireEvent.click(within(shownBy).getByRole('button', { name: 'Unlink save conflict' }))
@@ -212,7 +240,7 @@ describe('TestsView', () => {
     mocks.getBehavior.mockResolvedValue({ ...behavior(), test_results: [], history: [] })
     mocks.patchBehavior.mockResolvedValue(behavior())
     show('/projects/demo/specification?view=tests&behavior=bhv-save')
-    fireEvent.click(await screen.findByRole('button', { name: 'Link a test' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Link evidence' }))
     fireEvent.change(screen.getByLabelText('Test key, as CI reports it'), { target: { value: 'cargo:api::retry' } })
     fireEvent.click(screen.getByRole('button', { name: 'Link' }))
     await waitFor(() =>
@@ -224,12 +252,12 @@ describe('TestsView', () => {
     mocks.createBehavior.mockResolvedValue(behavior({ id: 'bhv-new' }))
     show('/projects/demo/specification?view=tests&section=mn-save')
     await screen.findByText('Failed save keeps edits')
-    fireEvent.click(screen.getByRole('button', { name: 'New behavior' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New promise' }))
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
-    expect(await within(dialog).findByText('A behavior needs a title.')).toBeTruthy()
+    expect(await within(dialog).findByText('A promise needs a title.')).toBeTruthy()
     fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'Retry saves edits' } })
-    fireEvent.change(within(dialog).getByLabelText('Linked tests'), {
+    fireEvent.change(within(dialog).getByLabelText('Evidence (test keys)'), {
       target: { value: 'cargo:api::retry\n\n cargo:api::retry \nplaywright:retry' },
     })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
@@ -247,10 +275,10 @@ describe('TestsView', () => {
   it('keeps reported but unlinked tests folded, and links one to a behavior', async () => {
     mocks.patchBehavior.mockResolvedValue(behavior())
     show()
-    const toggle = await screen.findByRole('button', { name: /1 reported tests belong to no behavior/ })
-    expect(screen.queryByRole('combobox', { name: 'Link cargo:api::orphan to a behavior' })).toBeNull()
+    const toggle = await screen.findByRole('button', { name: /1 reported tests belong to no promise/ })
+    expect(screen.queryByRole('combobox', { name: 'Link cargo:api::orphan to a promise' })).toBeNull()
     fireEvent.click(toggle)
-    fireEvent.change(screen.getByRole('combobox', { name: 'Link cargo:api::orphan to a behavior' }), {
+    fireEvent.change(screen.getByRole('combobox', { name: 'Link cargo:api::orphan to a promise' }), {
       target: { value: 'bhv-share' },
     })
     await waitFor(() =>
@@ -262,15 +290,73 @@ describe('TestsView', () => {
     mocks.scopes = ['read']
     mocks.listBehaviors.mockResolvedValue({ items: [], total: 0, limit: 500 })
     show()
-    expect(await screen.findByText(/No behaviors yet\. Describe what the software must do/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'New behavior' })).toBeNull()
+    expect(await screen.findByText(/No promises yet\. Write down what the software must do/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'New promise' })).toBeNull()
   })
 
   it('offers no writes in an archived project, which would refuse them', async () => {
     mocks.archived = true
     mocks.listBehaviors.mockResolvedValue({ items: [], total: 0, limit: 500 })
     show()
-    expect(await screen.findByText(/No behaviors yet/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'New behavior' })).toBeNull()
+    expect(await screen.findByText(/No promises yet/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'New promise' })).toBeNull()
+  })
+  it('reports what moved in the period, by name, and the sections that became complete', async () => {
+    mocks.fetchReport.mockResolvedValue(
+      report({
+        now_working: list([{ id: 'bhv-save', title: 'Failed save keeps edits', section: 'mn-save', status: 'verified', at: now }]),
+        broke: list([{ id: 'bhv-share', title: 'Share link opens read-only', section: 'mn-share', status: 'failing', at: now }]),
+        went_stale: { items: [], total: 2, limit: 100 },
+        sections_completed: [{ section: 'mn-save', total: 1 }],
+      }),
+    )
+    show()
+    const summary = await screen.findByRole('region', { name: 'What changed' })
+    expect(await within(summary).findByText(/1 more than a week ago/)).toBeTruthy()
+    expect(within(summary).getByRole('img', { name: 'Working promises per period: 0 → 0 → 0 → 0 → 1' })).toBeTruthy()
+    expect(within(summary).getByText('work now')).toBeTruthy()
+    expect(within(summary).getByText('stopped working')).toBeTruthy()
+    expect(within(summary).getByText('2 not checked for a while now')).toBeTruthy()
+    expect(within(summary).getByText('Saving: all 1 promises work.')).toBeTruthy()
+    fireEvent.click(within(summary).getByRole('button', { name: 'Share link opens read-only' }))
+    expect(mocks.openBehavior).toHaveBeenCalledWith('bhv-share')
+
+    fireEvent.click(within(summary).getByRole('button', { name: 'This month' }))
+    await waitFor(() => expect(mocks.fetchReport).toHaveBeenLastCalledWith('token', 'demo', 30))
+  })
+
+  it('says what happened on a promise that stopped working, without opening it', async () => {
+    mocks.listBehaviors.mockResolvedValue({
+      items: [
+        behavior({
+          status: 'failing',
+          last_result: { test: 'playwright:editor.spec.ts › keeps edits', outcome: 'fail', detail: 'Save button stayed enabled', at: now, commit: null, run: 'vrn-2' },
+        }),
+      ],
+      total: 1,
+      limit: 500,
+    })
+    show()
+    expect(await screen.findByText('Save button stayed enabled')).toBeTruthy()
+    expect(screen.getByText('What happened:')).toBeTruthy()
+  })
+
+  it('records a check by hand under the promise\'s own key', async () => {
+    mocks.getBehavior.mockResolvedValue({ ...behavior(), test_results: [], history: [] })
+    mocks.patchBehavior.mockResolvedValue(behavior())
+    mocks.reportRun.mockResolvedValue({})
+    show('/projects/demo/specification?view=tests&behavior=bhv-save')
+    expect(await screen.findByText('No check reported yet.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Checked it myself' }))
+    fireEvent.change(screen.getByLabelText('What did you see? (optional)'), { target: { value: 'Edits survived a failed save' } })
+    fireEvent.click(screen.getByRole('button', { name: 'It works' }))
+    await waitFor(() =>
+      expect(mocks.reportRun).toHaveBeenCalledWith('token', 'demo', {
+        note: 'Checked by hand in Takomo',
+        results: [{ test: 'manual:bhv-save', outcome: 'pass', detail: 'Edits survived a failed save' }],
+      }),
+    )
+    expect(mocks.patchBehavior).toHaveBeenCalledWith('token', 'bhv-save', { add_tests: ['manual:bhv-save'] })
+    expect(await screen.findByText('Recorded.')).toBeTruthy()
   })
 })

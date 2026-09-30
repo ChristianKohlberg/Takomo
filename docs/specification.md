@@ -55,8 +55,10 @@ Inbox is the rail's footer entry, directly above the profile block; it carries
 the count of open questions, or a green check when there are none. The language
 switch is in the profile menu.
 
-The Verification and Evidence view (`view=tests`) lists the project's
-behaviors with their computed status — verified, failing, stale or untested —
+The Promises view (`view=tests`) opens with a report of what changed this
+week or month — promises that started working, were repaired or stopped
+working, and sections that became complete — and then lists the project's
+behaviors as promises with their computed status — verified, failing, stale or untested —
 narrowed by status, by text and by the selected section, plus the reported test
 keys no behavior links yet. `behavior={id}` in the URL opens one: its statement,
 section, linked tests with their latest results, and recent history. See

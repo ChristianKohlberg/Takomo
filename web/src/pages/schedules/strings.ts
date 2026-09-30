@@ -5,7 +5,7 @@ import { defineStrings } from '@/lib/i18n'
 export const STR = defineStrings({
   en: {
     schedules: 'Schedules',
-    verification: 'Verification and Evidence',
+    verification: 'Promises',
     environments: 'Environments',
     specification: 'Specification',
     board: 'Board',
@@ -101,7 +101,7 @@ export const STR = defineStrings({
   },
   de: {
     schedules: 'Zeitpläne',
-    verification: 'Verifizierung und Nachweise',
+    verification: 'Zusagen',
     environments: 'Umgebungen',
     specification: 'Spezifikation',
     board: 'Board',

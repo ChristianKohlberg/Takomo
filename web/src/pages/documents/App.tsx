@@ -199,8 +199,8 @@ export function DocumentView() {
       testsFor={testsFor}
       onShowTests={openTests}
       testsLabel={t.viewTests}
-      failedLabel={lang === 'de' ? 'fehlgeschlagen' : 'failing'}
-      verifiedLabel={lang === 'de' ? 'verifiziert' : 'verified'}
+      failedLabel={lang === 'de' ? 'funktionieren nicht' : "don't work"}
+      verifiedLabel={lang === 'de' ? 'funktionieren' : 'work'}
       onError={handleErr}
       standing={standing}
       trace={trace}

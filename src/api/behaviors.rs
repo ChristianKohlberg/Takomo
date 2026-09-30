@@ -1,5 +1,6 @@
 //! Verification — `/v1/projects/{project}/behaviors`, `/v1/behaviors/{id}`,
-//! `/v1/projects/{project}/runs` and `/v1/projects/{project}/verification`.
+//! `/v1/projects/{project}/runs`, `/v1/projects/{project}/verification` and
+//! `/v1/projects/{project}/verification/report`.
 //!
 //! Takomo stores; the reporter computes. CI or an agent runs the tests and
 //! reports pass/fail per test key; this layer validates shapes and scope, and
@@ -316,5 +317,24 @@ pub async fn summary(
     ctx.require_project(&project)?;
     let store = state.clone();
     let out = super::blocking_read(move || store.store.verification_summary(&project)).await?;
+    Ok(Json(out))
+}
+
+/// GET /v1/projects/{project}/verification/report?days= (read) — what changed
+/// over the last `days` (default 7): behaviors that started working, were
+/// repaired, broke or went stale, sections that became fully verified, and a
+/// trend over the last few periods.
+pub async fn report_changes(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    let pairs = query_pairs(raw.as_deref());
+    let days = parse_i64_param(&pairs, "days")?.unwrap_or(7);
+    let store = state.clone();
+    let out = super::blocking_read(move || store.store.verification_report(&project, days)).await?;
     Ok(Json(out))
 }

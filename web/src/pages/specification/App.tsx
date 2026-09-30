@@ -56,8 +56,8 @@ const words = {
     archived: 'This project is archived: its specification can be read, but nothing can be written to it.',
     failed: 'The specification could not be opened.',
     retry: 'Try again',
-    tests: 'Section tests',
-    testsShort: 'Tests',
+    tests: 'Section promises',
+    testsShort: 'Promises',
     choose: 'Choose a project to open its specification.',
   },
   de: {
@@ -68,8 +68,8 @@ const words = {
     archived: 'Dieses Projekt ist archiviert: seine Spezifikation kann gelesen, aber nicht geschrieben werden.',
     failed: 'Die Spezifikation konnte nicht geöffnet werden.',
     retry: 'Erneut versuchen',
-    tests: 'Abschnittstests',
-    testsShort: 'Tests',
+    tests: 'Zusagen des Abschnitts',
+    testsShort: 'Zusagen',
     choose: 'Wähle ein Projekt, um seine Spezifikation zu öffnen.',
   },
 }
