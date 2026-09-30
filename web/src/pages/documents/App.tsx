@@ -2,7 +2,7 @@ import { DiagramContext } from '@/lib/diagram'
 import { useSectionTrace } from '@/hooks/useSectionTrace'
 import { affectsProjectTopic, useProjectUpdates } from '@/hooks/useProjectUpdates'
 import { useWorkspaceNavigate } from '@/hooks/useWorkspace'
-import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
+import { useWorkspaceFocus, useWorkspaceSection } from '@/hooks/useWorkspaceSection'
 import { useSpecification } from '../specification/context'
 // /documents — the project's plan, written out.
 //
@@ -63,6 +63,7 @@ export function DocumentView() {
   const { toast } = useToast()
   const navigate = useWorkspaceNavigate()
   const [focusSection, selectSection] = useWorkspaceSection()
+  const [sectionFocus, setSectionFocus] = useWorkspaceFocus()
   const historyEpoch = useRef(0)
   useEffect(() => {
     const ref = historyEpoch
@@ -215,6 +216,8 @@ export function DocumentView() {
       onSkipped={onSkipped}
       focusSection={focusSection}
       onSelection={selectSection}
+      sectionFocus={sectionFocus}
+      onSectionFocus={setSectionFocus}
       labels={{
         readOnly: t.readOnlyBanner,
         empty: t.empty,

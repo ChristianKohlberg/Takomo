@@ -10,6 +10,9 @@ section chunk sequence and identifies its ordinal, including repeated passages.
 Changed or ambiguous text falls back to section focus; removed sections show a notice. Escape closes
 the modal. The separate Find command remains literal next/previous occurrence
 search, and browser Cmd+F is unchanged.
+While a section is focused (`focus=`, see `documents.md` › Section focus) results are
+limited to that subtree unless **In the whole document** is ticked; the count names hits left
+outside, and opening one outside leaves focus.
 
 An empty search input offers up to eight recent queries. Only deliberately
 submitted queries and queries used to open a result are remembered; typing alone

@@ -21,6 +21,13 @@ import { MoveSectionDialog } from '@/components/documents/MoveSectionDialog'
 import { documentAppearanceStyle, type DocumentAppearance } from '@/lib/document-appearance'
 import { usePersonalSelection } from '@/hooks/usePersonalSelection'
 import { type SyncConnection } from '@/hooks/useSyncConnection'
+import type { FocusChange } from '@/hooks/useWorkspaceSection'
+import { SectionFocusBand, SectionFocusBreadcrumb } from '@/components/documents/SectionFocus'
+import { outsideFocus, sectionFocusScope } from '@/lib/section-focus'
+import { readCommentThreads, COMMENT_FIELD } from '@/lib/document-comments'
+import { isTextEntry } from '@/lib/mindmap-commands'
+import { pick } from '@/lib/i18n'
+import { STR } from './strings'
 // The plan, written out: the map's tree read as reading order.
 //
 // This is `/mindmaps`' Live.tsx pointed at the same document from the other
@@ -93,6 +100,7 @@ import {
   sameTree,
   visibleSections,
   type PlanNode,
+  type PlanSection,
 } from '@/lib/plan-sections'
 import { standingOf, type Standing } from '@/lib/plan-trace'
 import SectionEditor from './SectionEditor'
@@ -181,6 +189,10 @@ export interface PlanProps {
   /** A section handed over by link (`/documents#n=`), or null. Honoured once. */
   focusSection?: string | null
   onSelection?: (node: string | null) => void
+  /** Section focus (`focus=`): the section whose subtree alone is rendered, or null. */
+  sectionFocus?: string | null
+  /** Enter, change or leave section focus. A history entry, never a document write. */
+  onSectionFocus?: (node: string | null, change?: FocusChange) => void
   labels: PlanLabels
   railLabels: OutlineRailLabels
   sectionLabels: SectionPanelLabels
@@ -221,6 +233,8 @@ function ConnectedPlan({
   onSkipped,
   focusSection = null,
   onSelection,
+  sectionFocus = null,
+  onSectionFocus,
   labels,
   railLabels,
   sectionLabels,
@@ -229,10 +243,14 @@ function ConnectedPlan({
   const { ydoc, provider } = connection
 
   const [tree, setTree] = useState<PlanNode[]>([])
+  const [treeRead, setTreeRead] = useState(false)
   const [summaries, setSummaries] = useState(() => sectionSummaries(ydoc))
   const collapsible = useMemo(() => new Set(Object.keys(summaries)), [summaries])
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
-  const [selected, setSelected] = usePersonalSelection(onSelection)
+  const [selected, setSelected, setSelectedQuietly] = usePersonalSelection(onSelection)
+  const words = pick(STR, locale)
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
   const focused = useRef<string | null>(null)
   const numbering = useDocumentNumbering(project, appearance)
   const [moving, setMoving] = useState<string | null>(null)
@@ -271,6 +289,7 @@ function ConnectedPlan({
       setSummaries(prev => JSON.stringify(prev) === JSON.stringify(nextSummaries) ? prev : nextSummaries)
       const next = readPlanTree(ydoc)
       setTree((prev) => (sameTree(prev, next) ? prev : next))
+      setTreeRead(true)
     }
     read()
     const nm = nodesMap(ydoc)
@@ -293,6 +312,26 @@ function ConnectedPlan({
 
   const sections = useMemo(() => planSections(tree), [tree])
   const rows = useMemo(() => flattenSections(sections), [sections])
+
+  // ---- section focus ---------------------------------------------------------
+  // A personal VIEW narrowing: the focused section and its subtree are the only
+  // rows handed to the renderer (and the outline), so no other section's editor
+  // is even constructed. Numbers and depths are the real ones from `sections`.
+  const scope = useMemo(() => sectionFocusScope(sections, sectionFocus), [sections, sectionFocus])
+  const scopeRef = useRef(scope)
+  scopeRef.current = scope
+  const scopeSections = useMemo(() => (scope ? [scope.root] : sections), [scope, sections])
+  const scopeRows = useMemo(() => (scope ? rows.filter(row => scope.ids.has(row.key)) : rows), [scope, rows])
+  // A stale local replica must not drop a shared focus link before the server
+  // has spoken; a provider without the flag (tests, offline stubs) counts as synced.
+  const [synced, setSynced] = useState(() => (provider as { synced?: boolean }).synced !== false)
+  useEffect(() => {
+    if (synced) return
+    const target = provider as unknown as { on?: (event: string, fn: (value: boolean) => void) => void; off?: (event: string, fn: (value: boolean) => void) => void }
+    const onSync = (value: boolean) => { if (value) setSynced(true) }
+    target.on?.('sync', onSync)
+    return () => target.off?.('sync', onSync)
+  }, [provider, synced])
   const searchNodes = useMemo(() => rows.map(row => ({ id: row.key, title: row.title })), [rows])
   const search = useDocumentSearch(ydoc, searchNodes)
   const activeMatch = search.activeMatch
@@ -330,9 +369,9 @@ function ConnectedPlan({
    */
   const previews = useMemo(() => {
     const out = new Map<string, string>()
-    for (const row of rows) out.set(row.key, proseTextOf(ydoc, row.key))
+    for (const row of scopeRows) out.set(row.key, proseTextOf(ydoc, row.key))
     return out
-  }, [rows, ydoc])
+  }, [scopeRows, ydoc])
 
   // ---- which sections are mounted -----------------------------------------
 
@@ -442,9 +481,66 @@ function ConnectedPlan({
     [sections, setSelected],
   )
 
+  /** Where section focus was entered from: keyboard focus returns there on exit. */
+  const focusOrigin = useRef<string | null>(null)
+  const unfold = useCallback((key: string, tree: readonly PlanSection[] = sections) => {
+    setCollapsed((current) => {
+      const hiding = [key, ...ancestorKeys(tree, key)].filter((k) => current.has(k))
+      if (hiding.length === 0) return current
+      const next = new Set(current)
+      for (const k of hiding) next.delete(k)
+      return next
+    })
+  }, [sections])
+  const enterFocus = useCallback((key: string) => {
+    if (!onSectionFocus || !rows.some(row => row.key === key)) return
+    if (!scopeRef.current) focusOrigin.current = selectedRef.current ?? key
+    unfold(key)
+    setSelectedQuietly(key)
+    focused.current = key
+    onSectionFocus(key, { section: key })
+  }, [onSectionFocus, rows, unfold, setSelectedQuietly])
+  /** Leave focus and land on `key` (selected, scrolled, keyboard focus on its heading). */
+  const exitFocusTo = useCallback((key: string | null, tree: readonly PlanSection[] = sections) => {
+    if (!onSectionFocus) return
+    if (key) {
+      unfold(key, tree)
+      setSelectedQuietly(key)
+      focused.current = key
+    }
+    onSectionFocus(null, key ? { section: key } : {})
+  }, [onSectionFocus, sections, unfold, setSelectedQuietly])
+  const exitFocus = useCallback(() => {
+    const current = scopeRef.current
+    if (!current) return
+    const origin = focusOrigin.current
+    exitFocusTo(origin && rows.some(row => row.key === origin) ? origin : current.root.key)
+  }, [exitFocusTo, rows])
+  /** Navigation to a section: stays focused when the target is inside the focus,
+   *  leaves focus and goes there when it is not. */
+  const goTo = useCallback((key: string) => {
+    const current = scopeRef.current
+    if (current && !current.ids.has(key)) exitFocusTo(key)
+    else onSelect(key)
+  }, [exitFocusTo, onSelect])
+
+  // An unknown or deleted focus id: show the whole document, say so, drop the param.
+  useEffect(() => {
+    if (!sectionFocus || scope || !treeRead || !synced || rows.length === 0) return
+    setNotice({ text: words.focusUnknown })
+    onSectionFocus?.(null, { replace: true })
+  }, [sectionFocus, scope, treeRead, synced, rows.length, onSectionFocus, words.focusUnknown])
+
+  // The URL's last (selection, focus) pair: a selection that changes while the
+  // focus stays put is a navigation (an agent's link, say) and may leave focus;
+  // one that arrives together with a focus change (Back, a shared link) is not.
+  const lastSectionFocus = useRef<{ section: string | null; focus: string | null } | null>(null)
   // A section handed over by link. Waits for the section to exist: the ask
   // arrives with the URL and the document is still syncing.
   useEffect(() => {
+    const last = lastSectionFocus.current
+    const focusKey = scope?.root.key ?? null
+    lastSectionFocus.current = { section: focusSection, focus: focusKey }
     if (!focusSection) {
       // A missing URL selection is not a new instruction on every tree edit.
       if (focused.current !== null) {
@@ -455,9 +551,93 @@ function ConnectedPlan({
     }
     if (focused.current === focusSection) return
     if (!rows.some((row) => row.key === focusSection)) return
+    if (scope && !scope.ids.has(focusSection)) {
+      if (last && last.focus === focusKey && last.section !== focusSection) exitFocusTo(focusSection)
+      else focused.current = focusSection
+      return
+    }
     if (activeMatch?.sectionId !== focusSection) onSelect(focusSection)
     focused.current = focusSection
-  }, [focusSection, rows, onSelect, setSelected, activeMatch?.sectionId])
+  }, [focusSection, rows, onSelect, setSelected, activeMatch?.sectionId, scope, exitFocusTo])
+
+  // Entering, changing and leaving focus move the reader: to the focused
+  // section's heading, or back to where they came from. A shared link opened
+  // cold only scrolls; it does not steal keyboard focus.
+  const previousFocusKey = useRef<string | null | undefined>(undefined)
+  const pendingReveal = useRef<{ key: string; focus: boolean } | null>(null)
+  useEffect(() => {
+    if (sectionFocus && !scope) return
+    const now = scope?.root.key ?? null
+    const before = previousFocusKey.current
+    previousFocusKey.current = now
+    if (before === now) return
+    if (before === undefined) {
+      if (now && !(focusSection && scope?.ids.has(focusSection))) pendingReveal.current = { key: now, focus: false }
+      return
+    }
+    if (now) {
+      unfold(now)
+      pendingReveal.current = { key: now, focus: true }
+      return
+    }
+    const target = focusSection && rows.some(row => row.key === focusSection) ? focusSection : before
+    if (target) pendingReveal.current = { key: target, focus: true }
+  }, [sectionFocus, scope, focusSection, rows, unfold])
+  useEffect(() => {
+    const reveal = pendingReveal.current
+    if (!reveal) return
+    const element = elements.current.get(reveal.key)
+    if (!element) return
+    pendingReveal.current = null
+    // The focused section opens the column, so its top keeps the breadcrumb in view.
+    if (scopeRef.current?.root.key === reveal.key && columnRef.current) columnRef.current.scrollTop = 0
+    else element.scrollIntoView?.({ block: 'start' })
+    if (!reveal.focus) return
+    const heading = element.querySelector<HTMLElement>('.document-heading')
+    if (!heading) return
+    if (heading.getAttribute('contenteditable') !== 'true' && !heading.hasAttribute('tabindex')) heading.tabIndex = -1
+    heading.focus({ preventScroll: true })
+  })
+
+  // Alt+F focuses the current section (or leaves focus when it is the focused
+  // one); Alt+Shift+F is the same for browsers that reserve Alt+F for their own
+  // menu. Escape leaves focus when nothing else claimed it.
+  useEffect(() => {
+    if (!onSectionFocus) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey) return
+      const overlay = document.querySelector('[role="dialog"], [role="menu"], [data-slot="popover-content"]')
+      if (event.altKey && event.code === 'KeyF') {
+        const key = selectedRef.current
+        if (!key || overlay) return
+        event.preventDefault()
+        if (scopeRef.current?.root.key === key) exitFocus()
+        else enterFocus(key)
+        return
+      }
+      if (event.key !== 'Escape' || event.altKey || event.shiftKey || !scopeRef.current || overlay) return
+      const active = document.activeElement
+      // Form fields and a title being edited own Escape; section prose does not
+      // (its menus claim Escape themselves, which `defaultPrevented` reports).
+      const editing = active instanceof HTMLElement && (isTextEntry(active) || !!active.closest('[contenteditable]:not([contenteditable="false"])'))
+      if (editing && !(active as HTMLElement).closest('.ProseMirror')) return
+      event.preventDefault()
+      exitFocus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onSectionFocus, enterFocus, exitFocus])
+
+  // Work waiting outside the focus, read from the shared document only while focused.
+  const [threads, setThreads] = useState<ReturnType<typeof readCommentThreads>>([])
+  useEffect(() => {
+    if (!scope) return
+    const map = ydoc.getMap(COMMENT_FIELD)
+    const read = () => setThreads(readCommentThreads(ydoc))
+    read()
+    map.observeDeep(read)
+    return () => map.unobserveDeep(read)
+  }, [ydoc, scope])
 
   const onToggleHistory = useCallback((key: string) => {
     const open = !openHistory.has(key)
@@ -475,7 +655,7 @@ function ConnectedPlan({
     })
   }, [])
 
-  const visible = useMemo(() => visibleSections(sections, effectiveCollapsed), [sections, effectiveCollapsed])
+  const visible = useMemo(() => visibleSections(scopeSections, effectiveCollapsed), [scopeSections, effectiveCollapsed])
 
   // ---- deciding on a proposal ---------------------------------------------
 
@@ -497,6 +677,18 @@ function ConnectedPlan({
     const key = history ? history.insert(create) : create()
     if (!key) return false
     pendingEditorFocus.current = key
+    // Inside the focused subtree it simply appears; anywhere else (an H1 at the
+    // top level, a sibling of the focused section) focus is left and the reader
+    // follows the new section.
+    const current = scopeRef.current
+    if (current) {
+      const fresh = planSections(readPlanTree(ydoc))
+      if (!sectionFocusScope(fresh, current.root.key)?.ids.has(key)) {
+        setNear((near) => near === null ? null : new Set([...near, key]))
+        exitFocusTo(key, fresh)
+        return true
+      }
+    }
     setCollapsed(new Set())
     setNear((current) => current === null ? null : new Set([...current, key]))
     setSelected(key)
@@ -535,8 +727,6 @@ function ConnectedPlan({
     return () => { for (const unsubscribe of subscriptions.values()) unsubscribe() }
   }, [])
 
-  const selectedRef = useRef(selected)
-  selectedRef.current = selected
   const commentsSection = comments?.section ?? null
   const commentsSectionRef = useRef(commentsSection)
   commentsSectionRef.current = commentsSection
@@ -752,8 +942,10 @@ function ConnectedPlan({
     if (result.ok) {
       const freshSections = planSections(readPlanTree(ydoc))
       setCollapsed(current => new Set([...current].filter(key => ![id, ...ancestorKeys(freshSections, id)].includes(key))))
-      setSelected(id)
       setNotice({ text: locale === 'de' ? 'Abschnitt verschoben' : 'Section moved', undo: true })
+      const current = scopeRef.current
+      if (current && !sectionFocusScope(freshSections, current.root.key)?.ids.has(id)) exitFocusTo(id, freshSections)
+      else setSelected(id)
       onMoved?.(id)
     }
     return result
@@ -791,6 +983,11 @@ function ConnectedPlan({
     window.getSelection()?.addRange(range)
     return true
   }
+  const knownKeys = useMemo(() => new Set(rows.map(row => row.key)), [rows])
+  const outsideCounts = useMemo(() => scope ? outsideFocus(scope, knownKeys, pending, threads) : { proposals: 0, comments: 0 }, [scope, knownKeys, pending, threads])
+  const numberShown = (section: PlanSection) => section.depth === 0 ? numbering.value.h1 : section.depth === 1 ? numbering.value.h2 : true
+  const sectionLabel = (section: PlanSection) => `${numberShown(section) ? `${section.number} ` : ''}${section.title || railLabels.untitled}`
+  const focusSectionLabels = useMemo(() => ({ ...sectionLabels, focusSection: words.focusSection }), [sectionLabels, words.focusSection])
   return (
     <DocumentReviewProvider key={`${token}:${session.mindmap}`} token={token ?? ""} map={session.mindmap} project={project ?? ""} locale={locale} canWrite={canWrite}><main ref={paneRef} className="@container/document-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <DocumentActions focusMode={focusMode} locale={locale} canWrite={canWrite}
@@ -814,12 +1011,12 @@ function ConnectedPlan({
           <span>{railLabels.outline}</span>
         </button>
         {token && <DocumentEmbeddingStatus locale={locale} canSync={canWrite} />}</>} >
-        {token && <DocumentHybridSearch key={`${session.mindmap}:${token}`} token={token} map={session.mindmap} userId={userId} project={project} locale={locale} canSync={canWrite} onNavigate={result => {
+        {token && <DocumentHybridSearch key={`${session.mindmap}:${token}`} scope={scope} token={token} map={session.mindmap} userId={userId} project={project} locale={locale} canSync={canWrite} onNavigate={result => {
           if (!rows.some(section => section.key === result.node_id)) {
             setNotice({ text: locale === 'de' ? 'Dieser Abschnitt wurde entfernt. Bitte erneut suchen.' : 'This section was removed. Search again.' })
             return
           }
-          onSelect(result.node_id)
+          goTo(result.node_id)
           setOutlineDrawer(false)
           setNear(current => current === null ? null : new Set([...current, result.node_id]))
           const editor = editors.current.get(result.node_id)
@@ -835,6 +1032,17 @@ function ConnectedPlan({
       {notice && <div role="status" className="flex flex-none items-center gap-3 bg-muted px-4 py-2 text-sm">
         <span>{notice.text}</span>{notice.undo && <button type="button" className="underline" onClick={() => moveHistory('undo')}>{locale === 'de' ? 'Rückgängig' : 'Undo'}</button>}
       </div>}
+      {scope && <SectionFocusBand
+        label={words.focusRegion}
+        text={words.focusBand.replace('{title}', sectionLabel(scope.root))}
+        exit={words.focusExit}
+        exitHint={words.focusExitHint}
+        outside={[
+          outsideCounts.proposals === 1 ? words.focusProposalOutside : outsideCounts.proposals > 1 ? words.focusProposalsOutside.replace('{n}', String(outsideCounts.proposals)) : '',
+          outsideCounts.comments === 1 ? words.focusCommentOutside : outsideCounts.comments > 1 ? words.focusCommentsOutside.replace('{n}', String(outsideCounts.comments)) : '',
+        ].filter(Boolean)}
+        onExit={exitFocus}
+      />}
       {moving && canWrite && <MoveSectionDialog sections={sections} sectionKey={moving} lang={locale} onClose={() => setMoving(null)} onMove={moveSection} />}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden @min-[850px]/document-pane:flex-row">
       {/* The outline follows the available document pane, including when the
@@ -851,7 +1059,8 @@ function ConnectedPlan({
       >
         {outlineOpen && (
           <OutlineRail numbering={numbering.value} locale={locale} onReorder={canWrite ? moveSection : undefined}
-            sections={sections}
+            sections={scopeSections}
+            onFocusSection={onSectionFocus ? key => { enterFocus(key); if (paneNarrow) setOutlineDrawer(false) } : undefined}
             selected={selected}
             onSelect={key => { onSelect(key); if (paneNarrow) setOutlineDrawer(false) }}
             collapsible={collapsible}
@@ -859,7 +1068,7 @@ function ConnectedPlan({
             onToggle={onToggleFold}
             standing={standings}
             pending={pending}
-            labels={{ ...railLabels, move: locale === 'de' ? 'Abschnitt verschieben' : 'Move section' }}
+            labels={{ ...railLabels, move: locale === 'de' ? 'Abschnitt verschieben' : 'Move section', focusSection: words.focusSection }}
             onMove={canWrite ? setMoving : undefined}
           />
         )}
@@ -893,6 +1102,14 @@ function ConnectedPlan({
           // column is left once the outline has taken its share.
           <div className="document-appearance document-page mx-auto min-w-0"
             style={documentAppearanceStyle(appearance)}>
+            {scope && <SectionFocusBreadcrumb
+              label={words.focusBreadcrumb}
+              root={words.focusRoot}
+              ancestors={scope.ancestors.map(section => ({ key: section.key, label: sectionLabel(section) }))}
+              current={sectionLabel(scope.root)}
+              onRoot={exitFocus}
+              onAncestor={key => enterFocus(key)}
+            />}
             {visible.map((row, rowIndex) => {
               const folded = effectiveCollapsed.has(row.key)
               const mounted = !folded && (near === null || near.has(row.key) || row.key === selected || row.key === activeMatch?.sectionId)
@@ -931,6 +1148,7 @@ function ConnectedPlan({
                   onToggleHistory={() => onToggleHistory(row.key)}
                   onReview={() => onReview(row.key)}
                   onShowOnMap={() => onShowOnMap(row.key)}
+                  onFocusSection={onSectionFocus && scope?.root.key !== row.key ? () => enterFocus(row.key) : undefined}
                   onShowTests={() => onShowTests(row.key)}
                   testsStatus={testsFor(row.key).total > 0 ? (
                     <TestsStatusLine
@@ -964,7 +1182,7 @@ function ConnectedPlan({
                   active={selected === row.key}
                   onActivate={() => { focused.current = row.key; setSelected(row.key) }}
                   sectionRef={refFor(row.key)}
-                  labels={sectionLabels}
+                  labels={focusSectionLabels}
                 >
                   {fragment ? (
                     <SectionEditor
@@ -972,7 +1190,7 @@ function ConnectedPlan({
                       history={history ?? undefined}
                       ydoc={ydoc}
                       sectionId={row.key}
-                      onFollowReference={id => { onSelect(id); if (selected === id) elements.current.get(id)?.scrollIntoView({ block: 'start', behavior: 'smooth' }) }}
+                      onFollowReference={id => { goTo(id); if (selected === id) elements.current.get(id)?.scrollIntoView({ block: 'start', behavior: 'smooth' }) }}
                       onOpenComments={() => { setSelected(row.key); setComments({ section: row.key, draft: null }) }}
                       fragment={fragment}
                       provider={provider}
@@ -1021,7 +1239,7 @@ function ConnectedPlan({
       {allComments && !focusMode && <aside className="absolute inset-0 z-40 min-w-0 overflow-y-auto border-border-soft bg-card @min-[850px]/document-pane:static @min-[850px]/document-pane:w-80 @min-[850px]/document-pane:flex-none @min-[850px]/document-pane:border-l">
         <DocumentComments ydoc={ydoc} editor={null} actor={session.display} locale={locale} canWrite={canWrite}
           sectionTitle={id => { const row = rows.find(item => item.key === id); return row ? row.title || railLabels.untitled : null }}
-          onShowThread={thread => { pendingComment.current = thread; onSelect(thread.sectionId); setComments({ section: thread.sectionId, draft: null }); setAllComments(false) }}
+          onShowThread={thread => { pendingComment.current = thread; goTo(thread.sectionId); setComments({ section: thread.sectionId, draft: null }); setAllComments(false) }}
           onDraftConsumed={() => {}} onClose={() => setAllComments(false)} />
       </aside>}
       </div>

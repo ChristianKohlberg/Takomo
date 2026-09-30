@@ -410,7 +410,46 @@ H1 and H2 numbering can be hidden independently from the toolbar, with personal 
 remembered per project and a reset to project defaults. Appearance settings define default
 visibility and number size; numbers follow heading typography and color. `/grill` remains
 available in the Codex conversation. The outline supports Up/Down/Home/End for focus,
-Right/Left for hierarchy navigation, and Shift+F10 or the context menu for Move.
+Right/Left for hierarchy navigation, and Shift+F10, the ContextMenu key, right click or a
+long press for the section menu (**Move section…** for writers, **Show only this section**
+for everyone).
+
+### Section focus
+
+**Section focus** (DE „Nur diesen Abschnitt anzeigen") narrows the document to one section and
+its subsections. It is unrelated to **Focus mode**, which only hides chrome; the two combine.
+Enter it from a heading's section actions (ellipsis), from the outline's section menu, or with
+**Alt+F** on the current section. **Alt+Shift+F** does the same for browsers that keep Alt+F for
+their own menu (Firefox on Windows/Linux); on macOS it is Option+F. The shortcut toggles: on the
+focused section itself it leaves focus.
+
+Focus is part of the URL: `?view=document&focus=<node id>` (see `specificationLink`), beside
+`section=`, which stays the selection and scroll target. A focus link is shareable and opens
+focused. An unknown or deleted id shows the whole document with a notice and drops the
+parameter; a local replica that has not heard from the server yet never drops it. Entering,
+changing and leaving focus are history entries, so browser Back returns to the previous view;
+removing `focus=` from the URL also leaves it.
+
+Only the focused subtree is handed to the renderer, so no other section's editor is mounted.
+The outline shows the same subtree. Numbers are the document's own (7.4.2 stays 7.4.2). Above
+the section a breadcrumb („Spezifikation › 7 Auditplan › …") leads out: an ancestor focuses
+that ancestor, the first crumb leaves focus. A band at the top of the pane („Fokus: 7 Auditplan ·
+Alle Abschnitte anzeigen") is a labelled region with a real exit button, and names pending
+proposals and open comment threads outside the focus („3 Vorschläge außerhalb"), counted from
+the shared document the page already holds. Escape also leaves focus, unless a menu, dialog, form
+field or a title being edited claims it first. Entering moves keyboard focus to the focused
+heading; leaving returns it to the section focus was entered from.
+
+**Search document** is limited to the focus by default and offers **Im ganzen Dokument / In the
+whole document** to widen it; it filters the server's bounded top results, so widening can show
+more. Opening a hit, a section reference, a comment thread (**All comments** › Go to text), an
+agent's section link or a move that lands outside the focus leaves focus and goes there; a
+target inside it stays focused. A section created inside the focused subtree simply appears; one
+created elsewhere (an H1 at the top level, a sibling of the focused section) leaves focus and
+follows the new section.
+
+Section focus is personal view state only: nothing is written to the shared document or the
+server, and collaborators and agents are unaffected.
 
 ## Formatting, continuous writing, text comments, section references and paste
 

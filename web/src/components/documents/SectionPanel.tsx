@@ -29,7 +29,7 @@
 // what "better diffs" actually comes from, and it is why the review button is
 // beside the prose rather than in a panel somewhere else.
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { MoreHorizontal, Check, GitBranch, History, ShieldCheck, ShieldAlert, Shield, MessageSquare }  from 'lucide-react'
+import { MoreHorizontal, Check, GitBranch, History, ShieldCheck, ShieldAlert, Shield, MessageSquare, Focus }  from 'lucide-react'
 
 import { EditableText } from '@/components/EditableText'
 import { Hint } from '@/components/Hint'
@@ -41,6 +41,8 @@ import { cn } from '@/lib/utils'
 
 export interface SectionPanelLabels {
   actions?: string
+  /** "Show only this section" — section focus, a personal view narrowing. */
+  focusSection?: string
   /** Read out by the heading's editor. */
   renameSection: string
   /** A section nobody has given a title yet. */
@@ -99,6 +101,8 @@ export interface SectionPanelProps {
   onToggleHistory: () => void
   onReview: () => void
   onShowOnMap: () => void
+  /** Narrow the document view to this section and its subtree. Absent: no entry. */
+  onFocusSection?: () => void
   /** How many proposals are waiting on a person here. Drawn in the header, so a
    *  reader finds them without opening anything. */
   pending?: number
@@ -163,6 +167,7 @@ export function SectionPanel({
   onToggleHistory,
   onReview,
   onShowOnMap,
+  onFocusSection,
   pending = 0,
   proposalCount = 0,
   proposalsOpen = false,
@@ -193,6 +198,8 @@ export function SectionPanel({
     }
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      // Consumed here: a page-level Escape (section focus) must not also fire.
+      event.preventDefault()
       setActionsOpen(false)
       const target = event.target
       if (target instanceof Node && (actionsRef.current?.contains(target) || menuRef.current?.contains(target))) menuRef.current?.focus()
@@ -287,6 +294,16 @@ export function SectionPanel({
         >
           <GitBranch className="size-4" aria-hidden="true" /> {labels.showOnMap}
         </button>
+        {onFocusSection && (
+          <button
+            type="button"
+            onClick={() => { setActionsOpen(false); onFocusSection() }}
+            aria-keyshortcuts="Alt+F"
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <Focus className="size-4" aria-hidden="true" /> {labels.focusSection ?? 'Show only this section'}
+          </button>
+        )}
         {onShowTests && (
           <button
             type="button"

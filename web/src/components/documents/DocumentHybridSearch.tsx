@@ -16,7 +16,9 @@ export function SearchExcerpt({ result }: { result: SearchResult }) {
   })}{result.excerpt.slice(end)}</>
 }
 
-type Props = { userId?: string; project?: string; token: string; map: string; locale: Locale; canSync: boolean; onNavigate: (result: SearchResult) => void }
+/** Section focus: results are limited to these sections unless the reader widens the search. */
+export type SearchScope = { ids: ReadonlySet<string> }
+type Props = { userId?: string; project?: string; token: string; map: string; locale: Locale; canSync: boolean; onNavigate: (result: SearchResult) => void; scope?: SearchScope | null }
 export function DocumentHybridSearch(props: Props) {
   const shared = useEmbeddingStatus()
   const scope = `${props.map}:${props.token}`
@@ -29,7 +31,7 @@ function rescopeHistory(current: ScopedHistory, key: string | null): ScopedHisto
   const carried = current.key === null && key !== null ? current.history : []
   return { key, history: carried.reduceRight((history, item) => rememberSearch(history, item), readSearchHistory(key)) }
 }
-function SearchDialog({ token, map, userId, project, locale, canSync, onNavigate }: Props) {
+function SearchDialog({ token, map, userId, project, locale, canSync, onNavigate, scope }: Props) {
   const { status, error: statusError, syncing, deferred, localPending, awaitingFreshStatus, embed, clearNotice, watch } = useEmbeddingStatus()!
   const de = locale === 'de'
   const [open, setOpen] = useState(false)
@@ -52,7 +54,13 @@ function SearchDialog({ token, map, userId, project, locale, canSync, onNavigate
   const previousFocus = useRef<HTMLElement | null>(null)
   const navigating = useRef<SearchResult | null>(null)
   const listId = useId()
-  const results = response?.results ?? []
+  // Scoped by default while a section is focused; widening is per opening.
+  const [wide, setWide] = useState(false)
+  useEffect(() => { if (open) setWide(false) }, [open])
+  const allResults = response?.results ?? []
+  const narrowed = scope && !wide ? scope : null
+  const results = narrowed ? allResults.filter(result => narrowed.ids.has(result.node_id)) : allResults
+  const outside = allResults.length - results.length
   const showingHistory = !query.trim()
   const optionCount = showingHistory ? history.length : results.length
   const changeQuery = (value: string) => { setQuery(value); setResponse(null); setError(''); setActive(0); setBusy(Boolean(value.trim())) }
@@ -81,6 +89,7 @@ function SearchDialog({ token, map, userId, project, locale, canSync, onNavigate
   useEffect(() => {
     document.getElementById(`${listId}-${active}`)?.scrollIntoView?.({ block: 'nearest' })
   }, [active, listId])
+  const toggleWide = () => { setWide(value => !value); setActive(0); input.current?.focus() }
   const choose = (result: SearchResult) => { remember(query); navigating.current = result; setOpen(false) }
   const title = de ? 'Dokument durchsuchen' : 'Search document'
   const state = statusError ? (de ? 'Indexstatus nicht verfügbar' : 'Index status unavailable')
@@ -128,6 +137,10 @@ function SearchDialog({ token, map, userId, project, locale, canSync, onNavigate
           {canSync && <button type="button" disabled={syncing || !status?.configured || localPending} className="min-h-9 rounded border px-2 text-foreground disabled:opacity-50" onClick={() => { void embed() }}>{syncing ? (de ? 'Wird vorgemerkt…' : 'Scheduling…') : (de ? 'Dokument synchronisieren' : 'Sync document')}</button>}
           {!status?.configured && <a className="underline" href="/settings?section=search">{de ? 'Suche konfigurieren' : 'Configure search'}</a>}
         </div>
+        {scope && <label className="flex min-h-9 w-fit items-center gap-2 text-sm">
+          <input type="checkbox" checked={wide} onChange={toggleWide} className="size-4" />
+          {de ? 'Im ganzen Dokument' : 'In the whole document'}
+        </label>}
         {(statusError || status?.last_error) && <p className="text-xs text-destructive" role="status">{statusError || status?.last_error}</p>}
         {deferred && <p className="text-xs text-muted-foreground" role="status">{de ? 'Das Dokument ändert sich noch; die Synchronisierung wurde zurückgestellt. Nichts wurde vorgemerkt – bitte erneut versuchen, sobald das Tippen pausiert.' : 'Document is still changing; synchronization is deferred. Nothing was scheduled, so try again once typing pauses.'}</p>}
         {response?.mode === 'keyword' && response.semantic_status === 'unavailable' && status?.configured && !status.last_error && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche derzeit nicht verfügbar.' : 'Keyword results · meaning search is currently unavailable.'}</p>}
@@ -135,7 +148,7 @@ function SearchDialog({ token, map, userId, project, locale, canSync, onNavigate
         {response?.mode === 'keyword' && response.semantic_status === 'throttled' && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche kurz pausiert (Abfragelimit erreicht).' : 'Keyword results · meaning search paused briefly (query limit reached).'}</p>}
         <div aria-live="polite" className="text-sm text-muted-foreground">{error || (busy ? (de ? 'Suche läuft…' : 'Searching…') : !response ? ''
           : response.truncated ? (de ? `Die ${results.length} besten von ${response.candidates} passenden Abschnitten` : `Top ${results.length} of ${response.candidates} matching sections`)
-          : `${results.length} ${de ? (results.length === 1 ? 'Ergebnis' : 'Ergebnisse') : (results.length === 1 ? 'result' : 'results')}`)}</div>
+          : `${results.length} ${de ? (results.length === 1 ? 'Ergebnis' : 'Ergebnisse') : (results.length === 1 ? 'result' : 'results')}`)}{narrowed && response && !busy && !error && outside > 0 && ` · ${de ? `${outside} weitere außerhalb des Abschnitts` : `${outside} more outside the focused section`}`}</div>
         {showingHistory && <div className="flex items-center justify-between gap-2 text-sm">
           <span>{de ? 'Letzte Suchen' : 'Recent searches'}</span>
           {history.length > 0 && <button type="button" className="min-h-9 rounded px-2 underline hover:bg-muted" onClick={() => { setHistory([]); setActive(0); input.current?.focus() }}>{de ? 'Verlauf löschen' : 'Clear history'}</button>}

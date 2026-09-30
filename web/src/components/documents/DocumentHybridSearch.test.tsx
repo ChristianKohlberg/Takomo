@@ -212,3 +212,30 @@ describe('document hybrid search', () => {
     expect(screen.queryByText('early')).toBeNull()
   })
 })
+
+describe('document hybrid search under section focus', () => {
+  it('limits results to the focused sections until widened to the whole document', async () => {
+    mockFetch()
+    const navigate = vi.fn()
+    render(<DocumentHybridSearch token="test" map="m" locale="de" canSync={false} onNavigate={navigate} scope={{ ids: new Set(['one']) }} />)
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+    const input = await screen.findByRole('combobox')
+    fireEvent.change(input, { target: { value: 'parcel' } })
+    await screen.findByText('Delivery')
+    expect(screen.queryByText('Shipping')).toBeNull()
+    expect(screen.getByText(/1 weitere außerhalb des Abschnitts/)).toBeTruthy()
+    const widen = screen.getByRole('checkbox', { name: 'Im ganzen Dokument' }) as HTMLInputElement
+    expect(widen.checked).toBe(false)
+    fireEvent.click(widen)
+    await screen.findByText('Shipping')
+    fireEvent.click(screen.getByRole('option', { name: /Shipping/ }))
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(two))
+  })
+  it('offers no widening toggle without a focus', async () => {
+    mockFetch()
+    render(<DocumentHybridSearch token="test" map="m" locale="en" canSync={false} onNavigate={vi.fn()} />)
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true })
+    await screen.findByRole('combobox')
+    expect(screen.queryByRole('checkbox', { name: 'In the whole document' })).toBeNull()
+  })
+})
