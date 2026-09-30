@@ -220,6 +220,80 @@ pub async fn reset(
     Ok(Json(doc.to_json()))
 }
 
+/// POST /v1/documents/{id}/proposals/{proposal}/accept (write).
+///
+/// The document twin of the plan route: proposals are stored the same way in
+/// both (one `proposals` map beside the prose), so the same
+/// `proposal_apply::decide` applies them to the live replica.
+pub async fn accept_proposal(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((id, proposal)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    decide_proposal(
+        &state,
+        &ctx,
+        &id,
+        &proposal,
+        crate::api::proposal_apply::Decision::Accept,
+    )
+    .await
+    .map(Json)
+}
+
+/// POST /v1/documents/{id}/proposals/{proposal}/reject (write).
+pub async fn reject_proposal(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((id, proposal)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    decide_proposal(
+        &state,
+        &ctx,
+        &id,
+        &proposal,
+        crate::api::proposal_apply::Decision::Reject,
+    )
+    .await
+    .map(Json)
+}
+
+/// Shared by the routes above and `takomo_document_accept`/`_reject`.
+pub async fn decide_proposal(
+    state: &Arc<AppState>,
+    ctx: &AuthCtx,
+    id: &str,
+    proposal: &str,
+    decision: crate::api::proposal_apply::Decision,
+) -> ApiResult<Value> {
+    ctx.require_scope("write")?;
+    let doc = state.store.get_document(id)?;
+    ctx.require_project(&doc.project)?;
+    state.store.ensure_collab_writable(id)?;
+    let room = crate::api::docsync::open_room(state, id).await?;
+    let actor = ctx.actor.clone();
+    let now = crate::ids::now_ms();
+    let decided = room.mutate(|d| {
+        crate::api::proposal_apply::decide(d, proposal, decision, &actor, now, |d, _| {
+            Ok(Some(d.get_or_insert_xml_fragment(
+                crate::api::docprops::PROSE_FIELD,
+            )))
+        })
+    })?;
+    // A decision is an answer to a request, not typing: it is in the log
+    // before the response says it happened.
+    crate::api::docsync::flush(state, &room, &ctx.actor).await;
+    state.wake();
+    Ok(json!({
+        "ok": true,
+        "document": id,
+        "proposal": decided.record,
+        "status": decision.status(),
+        "applied": decided.applied,
+        "skipped": decided.skipped,
+    }))
+}
+
 /// POST /v1/documents/{id}/run (write) — the prompt bar.
 ///
 /// The one route in this server that calls a language model. `src/docagent.rs`

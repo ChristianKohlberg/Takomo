@@ -1,18 +1,24 @@
 // Turning an agent's proposal into an edit — the browser's half of Stage 2.
 //
-// The server reads the document and stores the proposal; it deliberately does
-// NOT construct nodes. Building ProseMirror content means knowing the editor's
-// exact schema, and the editor is the only thing that does — Rust writing nodes
-// it half-understands is how a shared document gets quietly corrupted. So the
-// markdown→nodes step lives here, next to the schema it targets.
+// This is the REFERENCE converter. A person accepting in the browser runs it;
+// an agent accepting over the API (`POST …/proposals/{id}/accept`) runs its Rust
+// twin, `src/api/proposal_apply.rs`, on the live replica. Building ProseMirror
+// content means knowing the editor's exact schema, so the twin is not trusted to
+// know it: `proposal-parity.test.ts` runs this code through a real editor bound
+// to a Y.Doc and commits what lands in the CRDT to
+// `tests/fixtures/proposal-markdown.json`, and the Rust tests must reproduce
+// every case node for node, attribute for attribute and mark for mark. What the
+// twin cannot reproduce exactly (HTML tables, `<details>`), it refuses.
 //
 // The parser is deliberately small and closed. It accepts exactly the blocks
 // the editor gives an id to, and anything it does not recognise becomes a
 // paragraph rather than being dropped: a proposal that silently loses a line is
 // worse than one that renders a line plainly, because only the second is visible
 // to the person deciding.
-import { DOMParser, type Node as PMNode, type Schema } from '@tiptap/pm/model'
+import { DOMParser, type Mark, type Node as PMNode, type Schema } from '@tiptap/pm/model'
 import type { Transaction } from '@tiptap/pm/state'
+
+import { parseInline } from './inline-markdown'
 
 export type OpKind = 'replace' | 'insert_after' | 'delete'
 
@@ -101,7 +107,7 @@ export function markdownToNodes(schema: Schema, markdown: string): PMNode[] {
       out.push(
         schema.nodes.heading.create(
           { level: hashes!.length },
-          text ? schema.text(text) : null,
+          inline(schema, text ?? ''),
         ),
       )
       continue
@@ -183,7 +189,30 @@ function pipeTable(schema: Schema, block: string): PMNode | null {
 }
 
 function paragraph(schema: Schema, text: string): PMNode {
-  return schema.nodes.paragraph!.create(null, text ? schema.text(text) : null)
+  return schema.nodes.paragraph!.create(null, inline(schema, text))
+}
+
+/**
+ * A block's inline markdown as text nodes carrying the editor's marks.
+ *
+ * Marks the schema does not have are dropped rather than written: the delimiters
+ * are still consumed, so `**x**` reads as `x`, never as a mark the editor cannot
+ * hold. `addToSet` applies the schema's own exclusions — `code` excludes every
+ * other mark in Tiptap — which the Rust twin mirrors (`proposal_apply.rs`).
+ */
+function inline(schema: Schema, text: string): PMNode[] {
+  const out: PMNode[] = []
+  for (const run of parseInline(text)) {
+    if (!run.text) continue
+    let marks: readonly Mark[] = []
+    for (const m of run.marks) {
+      const type = schema.marks[m.type]
+      if (!type) continue
+      marks = type.create(m.type === 'link' ? { href: m.href } : null).addToSet(marks)
+    }
+    out.push(schema.text(run.text, marks))
+  }
+  return out
 }
 
 /** Where a block with this id currently sits, or null if it is gone. */

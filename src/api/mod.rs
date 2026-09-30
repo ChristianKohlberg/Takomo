@@ -21,6 +21,7 @@ pub mod metrics;
 pub mod mindmaps;
 pub mod oauth;
 pub mod projects;
+pub mod proposal_apply;
 pub mod questions;
 pub mod schedules;
 pub mod search;

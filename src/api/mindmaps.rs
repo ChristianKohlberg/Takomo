@@ -1195,6 +1195,112 @@ pub async fn proposals(
     Ok(Json(json!({ "items": items, "total": total })))
 }
 
+/// POST /v1/mindmaps/{id}/proposals/{proposal}/accept (write) — apply a
+/// proposal to its section and record the decision.
+///
+/// The browser is no longer the only one who may accept. An agent that holds a
+/// `write` token can decide on a proposal it — or another agent — made; the
+/// decision is recorded exactly like a browser's (`decided_by`, `decided_at`),
+/// and the ops are applied to the LIVE replica, so open editors receive the
+/// change and a person typing elsewhere in the section keeps their words. See
+/// `proposal_apply` for what guards the server-side conversion.
+pub async fn accept_proposal(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((id, proposal)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    decide_proposal(
+        &state,
+        &ctx,
+        &id,
+        &proposal,
+        crate::api::proposal_apply::Decision::Accept,
+    )
+    .await
+    .map(Json)
+}
+
+/// POST /v1/mindmaps/{id}/proposals/{proposal}/reject (write) — record a no.
+/// The prose is untouched; the record stays, as rejected.
+pub async fn reject_proposal(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((id, proposal)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    decide_proposal(
+        &state,
+        &ctx,
+        &id,
+        &proposal,
+        crate::api::proposal_apply::Decision::Reject,
+    )
+    .await
+    .map(Json)
+}
+
+/// Shared by the two routes above and by `takomo_plan_accept`/`_reject`.
+pub async fn decide_proposal(
+    state: &Arc<AppState>,
+    ctx: &AuthCtx,
+    id: &str,
+    proposal: &str,
+    decision: crate::api::proposal_apply::Decision,
+) -> ApiResult<Value> {
+    // Owned, so the persist call below reads like every other handler's — the
+    // source scan in tests/api.rs looks for exactly that.
+    let state = state.clone();
+    ctx.require_scope("write")?;
+    let (map, room) = join(&state, ctx, id).await?;
+    state.store.ensure_collab_writable(id)?;
+    let actor = ctx.actor.clone();
+    let now = crate::ids::now_ms();
+    let decided = room.mutate(|doc| {
+        crate::api::proposal_apply::decide(doc, proposal, decision, &actor, now, |doc, record| {
+            // A plan proposal names its section. One that does not was made
+            // against a standalone document and cannot be applied to a plan.
+            let node = record
+                .get("node")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ApiError::not_found("proposal", proposal))?;
+            Ok(mindmapdoc::read_section_prose(doc, node))
+        })
+    })?;
+    persist(&state, &room, ctx).await;
+
+    let node = decided
+        .record
+        .get("node")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let status = decision.status();
+    // The same history entry the browser writes after deciding, with the text
+    // read from the replica rather than taken from anybody's word for it.
+    let text = match (&node, decision) {
+        (Some(node), crate::api::proposal_apply::Decision::Accept) => section_text(&room, node),
+        _ => None,
+    };
+    state.store.record_trace(&crate::store::trace::Record {
+        project: &map.project,
+        mindmap: id,
+        node: node.as_deref(),
+        kind: status,
+        actor: &ctx.actor,
+        user: ctx.user.as_deref(),
+        note: None,
+        text: text.as_deref(),
+    })?;
+    state.wake();
+    Ok(json!({
+        "ok": true,
+        "mindmap": id,
+        "node": node,
+        "proposal": decided.record,
+        "status": status,
+        "applied": decided.applied,
+        "skipped": decided.skipped,
+    }))
+}
+
 /// POST /v1/mindmaps/{id}/run (write) — ask for a change to one section.
 ///
 /// The ONE route in this codebase that calls a language model, now pointed at a

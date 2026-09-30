@@ -6135,6 +6135,109 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /mindmaps/{id}/proposals/{proposal}/accept:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string }, description: 'mm-…' }
+      - { name: proposal, in: path, required: true, schema: { type: string }, description: 'prop-…' }
+    post:
+      tags: [mindmaps]
+      summary: Accept a pending proposal — apply it on the live replica (write scope)
+      description: |
+        **An agent may decide, not only propose.** The proposal's operations are
+        applied server-side to the LIVE replica, so every connected editor receives
+        the change and concurrent typing is merged rather than overwritten. The
+        record is marked `accepted` with `decided_by` = the caller and
+        `decided_at`, exactly like a browser decision. The plan's history records an `accepted` / `rejected` act for the section.
+
+        - An op whose block has disappeared is skipped and reported in
+          `skipped`, and written onto the record as `dropped`. If NO op applies,
+          nothing changes and the proposal stays pending (`409
+          conflict.proposal_stale`).
+        - The server builds nodes with a twin of the browser's converter, held to
+          the browser's output by a committed fixture. What it cannot reproduce
+          exactly — an HTML table or `<details>` block — is refused before
+          anything is written (`422 validation.proposal_unsupported`); a person
+          can accept that proposal in the browser.
+        - Only a `pending` proposal can be decided (`409 conflict.proposal_decided`).
+      responses:
+        "200":
+          description: Applied and recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  mindmap: { type: string }
+                  node: { type: [string, 'null'] }
+                  proposal: { type: object, description: 'the stored record, now accepted' }
+                  status: { type: string, enum: [accepted] }
+                  applied: { type: integer }
+                  skipped: { type: array, items: { type: string } }
+        "403":
+          description: Token lacks the write scope, or the project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 'No such plan (`notfound.mindmap`), or no such proposal on it (`notfound.proposal`).'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 'Already decided (`conflict.proposal_decided`), nothing left to apply (`conflict.proposal_stale`), or archived.'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: 'A construct the server cannot build exactly (`validation.proposal_unsupported`).'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /mindmaps/{id}/proposals/{proposal}/reject:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string }, description: 'mm-…' }
+      - { name: proposal, in: path, required: true, schema: { type: string }, description: 'prop-…' }
+    post:
+      tags: [mindmaps]
+      summary: Reject a pending proposal (write scope)
+      description: |
+        Marks the record `rejected` with `decided_by` and `decided_at`. The prose
+        is untouched and the record stays, because "we considered this and said
+        no" is worth keeping. Only a `pending` proposal can be decided (`409
+        conflict.proposal_decided`). The plan's history records an `accepted` / `rejected` act for the section.
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  mindmap: { type: string }
+                  node: { type: [string, 'null'] }
+                  proposal: { type: object }
+                  status: { type: string, enum: [rejected] }
+                  applied: { type: integer }
+                  skipped: { type: array, items: { type: string } }
+        "403":
+          description: Token lacks the write scope, or the project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 'No such proposal (`notfound.proposal`).'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 'Already decided (`conflict.proposal_decided`), or archived.'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /mindmaps/{id}/versions:
     parameters:
       - {name: id, in: path, required: true, schema: {type: string}}
@@ -7463,6 +7566,107 @@ paths:
         "404": { description: Document not found. }
         "409": { description: 'The document or project is archived, or the log kept growing under three consecutive attempts (`conflict.collab_reset_stale`; retry).' }
         "422": { description: Mismatched confirmation. }
+
+  /documents/{id}/proposals/{proposal}/accept:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string }, description: 'doc-…' }
+      - { name: proposal, in: path, required: true, schema: { type: string }, description: 'prop-…' }
+    post:
+      tags: [documents]
+      summary: Accept a pending proposal — apply it on the live replica (write scope)
+      description: |
+        **An agent may decide, not only propose.** The proposal's operations are
+        applied server-side to the LIVE replica, so every connected editor receives
+        the change and concurrent typing is merged rather than overwritten. The
+        record is marked `accepted` with `decided_by` = the caller and
+        `decided_at`, exactly like a browser decision.
+
+        - An op whose block has disappeared is skipped and reported in
+          `skipped`, and written onto the record as `dropped`. If NO op applies,
+          nothing changes and the proposal stays pending (`409
+          conflict.proposal_stale`).
+        - The server builds nodes with a twin of the browser's converter, held to
+          the browser's output by a committed fixture. What it cannot reproduce
+          exactly — an HTML table or `<details>` block — is refused before
+          anything is written (`422 validation.proposal_unsupported`); a person
+          can accept that proposal in the browser.
+        - Only a `pending` proposal can be decided (`409 conflict.proposal_decided`).
+      responses:
+        "200":
+          description: Applied and recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  document: { type: string }
+                  proposal: { type: object, description: 'the stored record, now accepted' }
+                  status: { type: string, enum: [accepted] }
+                  applied: { type: integer }
+                  skipped: { type: array, items: { type: string } }
+        "403":
+          description: Token lacks the write scope, or the project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 'No such document (`notfound.document`), or no such proposal on it (`notfound.proposal`).'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 'Already decided (`conflict.proposal_decided`), nothing left to apply (`conflict.proposal_stale`), or archived.'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: 'A construct the server cannot build exactly (`validation.proposal_unsupported`).'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /documents/{id}/proposals/{proposal}/reject:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string }, description: 'doc-…' }
+      - { name: proposal, in: path, required: true, schema: { type: string }, description: 'prop-…' }
+    post:
+      tags: [documents]
+      summary: Reject a pending proposal (write scope)
+      description: |
+        Marks the record `rejected` with `decided_by` and `decided_at`. The prose
+        is untouched and the record stays, because "we considered this and said
+        no" is worth keeping. Only a `pending` proposal can be decided (`409
+        conflict.proposal_decided`).
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  document: { type: string }
+                  proposal: { type: object }
+                  status: { type: string, enum: [rejected] }
+                  applied: { type: integer }
+                  skipped: { type: array, items: { type: string } }
+        "403":
+          description: Token lacks the write scope, or the project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 'No such proposal (`notfound.proposal`).'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 'Already decided (`conflict.proposal_decided`), or archived.'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /documents/{id}/run:
     post:
@@ -12709,6 +12913,10 @@ x-error-codes:
   # -- document proposals: what an agent may offer -----------------------------
   validation.document_ops: "`ops` is not a usable list of operations, or none of them could be applied. An agent addresses BLOCKS BY ID — `[{\"op\":\"replace\",\"id\":\"blk_…\",\"markdown\":\"…\"}]` — and never sends a whole document, because a document would overwrite whatever somebody typed while the model was thinking. Re-read with takomo_document_read: the block ids move as people edit."
   validation.document_proposals: "the document already holds the maximum number of undecided proposals. Somebody has to accept or reject the ones already offered — a pile nobody decides on is the state this cap exists to make visible."
+  notfound.proposal: "no proposal with that id on this document or plan, or a proposal made against a standalone document presented to a plan. List them with takomo_plan_proposals / takomo_document_proposals or GET /v1/mindmaps/{id}/proposals."
+  conflict.proposal_decided: "the proposal is already accepted or rejected; only a pending proposal can be decided, so a second decision never overwrites the first one's decided_by. Read the proposals again; to change the text now, propose against the section as it stands."
+  conflict.proposal_stale: "none of the proposal's operations could be applied — every block it addresses is gone — so nothing changed and it stays pending. An accept that lands nothing is not an acceptance. Reject it and propose again against the current text."
+  validation.proposal_unsupported: "the proposal contains a construct the server cannot build exactly the way the editor does (an HTML table or <details> block), so it refused before writing anything and the proposal stays pending. A person can accept it in the document view, or re-propose the table as a Markdown pipe table."
   conflict.document_archived: "the document is archived and cannot be written to. Restore it first if the work still belongs to it."
 
   # -- the prompt bar: the one route that calls a model -------------------------

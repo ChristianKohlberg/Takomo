@@ -924,6 +924,16 @@ pub struct PlanProposalsArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ProposalDecisionArgs {
+    /// The plan's mindmap id (`mm-…`) for the plan tools, the document id
+    /// (`doc-…`) for the document tools.
+    pub id: String,
+    /// The proposal id (`prop-…`), as `takomo_plan_proposals` /
+    /// `takomo_document_proposals` or the propose call returned it.
+    pub proposal: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DocumentProposalsArgs {
     /// Document id (`doc-…`).
     pub id: String,
@@ -2474,6 +2484,110 @@ impl TakomoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_document_proposals(&require_auth(&ctx)?, a).await)
+    }
+
+    #[tool(
+        description = "ACCEPT a pending proposal on a document: its operations are applied to \
+        the live document (open editors receive the change; concurrent typing is merged, not \
+        overwritten) and the proposal is marked accepted with you as `decided_by`. Accept only \
+        what you were asked to accept or have reviewed — this makes the proposal live text. An \
+        op whose block has disappeared is skipped and reported in `skipped`; if none applies, \
+        the proposal stays pending (`conflict.proposal_stale`). A proposal holding an HTML \
+        table or <details> block is refused (`validation.proposal_unsupported`) — a person \
+        accepts those in the browser. Deciding a non-pending proposal is \
+        `conflict.proposal_decided`."
+    )]
+    async fn takomo_document_accept(
+        &self,
+        Parameters(a): Parameters<ProposalDecisionArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond(
+            crate::api::docs::decide_proposal(
+                &self.state,
+                &auth,
+                &a.id,
+                &a.proposal,
+                crate::api::proposal_apply::Decision::Accept,
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "REJECT a pending proposal on a document. The text is untouched; the \
+        proposal stays on record as rejected with you as `decided_by`, because \"we considered \
+        this and said no\" is worth keeping. Deciding a non-pending proposal is \
+        `conflict.proposal_decided`."
+    )]
+    async fn takomo_document_reject(
+        &self,
+        Parameters(a): Parameters<ProposalDecisionArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond(
+            crate::api::docs::decide_proposal(
+                &self.state,
+                &auth,
+                &a.id,
+                &a.proposal,
+                crate::api::proposal_apply::Decision::Reject,
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "ACCEPT a pending proposal on the plan: its operations are applied to the \
+        section on the live plan (open editors receive the change; concurrent typing is merged, \
+        not overwritten), the proposal is marked accepted with you as `decided_by`, and the \
+        plan's history records it. Accept only what you were asked to accept or have reviewed — \
+        this makes the proposal live text. An op whose block has disappeared is skipped and \
+        reported in `skipped`; if none applies, the proposal stays pending \
+        (`conflict.proposal_stale`). A proposal holding an HTML table or <details> block is \
+        refused (`validation.proposal_unsupported`) — a person accepts those in the browser."
+    )]
+    async fn takomo_plan_accept(
+        &self,
+        Parameters(a): Parameters<ProposalDecisionArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond(
+            crate::api::mindmaps::decide_proposal(
+                &self.state,
+                &auth,
+                &a.id,
+                &a.proposal,
+                crate::api::proposal_apply::Decision::Accept,
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        description = "REJECT a pending proposal on the plan. The section is untouched; the \
+        proposal stays on record as rejected with you as `decided_by`, and the plan's history \
+        records the decision. Deciding a non-pending proposal is `conflict.proposal_decided`."
+    )]
+    async fn takomo_plan_reject(
+        &self,
+        Parameters(a): Parameters<ProposalDecisionArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond(
+            crate::api::mindmaps::decide_proposal(
+                &self.state,
+                &auth,
+                &a.id,
+                &a.proposal,
+                crate::api::proposal_apply::Decision::Reject,
+            )
+            .await,
+        )
     }
 
     #[tool(

@@ -150,12 +150,14 @@ charged against the budget and a statically-imported one still is.
 There is no save button and no dirty state, which is the honest UI for a CRDT: "did my change save"
 is replaced by "am I connected", which the status line reports.
 
-## The agent: proposes, never writes
+## The agent: proposes, and may decide
 
 This is the half KONZEPT is actually about — *„Der Agent schlägt vor, der Mensch entscheidet."*
 
-Four MCP tools: `takomo_documents`, `takomo_document_read`, `takomo_document_propose`,
-`takomo_document_proposals`.
+Six MCP tools: `takomo_documents`, `takomo_document_read`, `takomo_document_propose`,
+`takomo_document_proposals`, `takomo_document_accept`, `takomo_document_reject` (and, for the
+plan, `takomo_plan_read`, `takomo_plan_propose`, `takomo_plan_proposals`, `takomo_plan_accept`,
+`takomo_plan_reject`).
 
 **An agent returns operations, never a document.** It reads the prose annotated with block ids and
 replies with ops against them:
@@ -170,8 +172,9 @@ Blocks it does not name are untouched, so somebody editing three paragraphs away
 That is a property of the vocabulary, not of the prompt — telling a model to stay in its lane is not
 the same as knowing it did.
 
-**Nothing it sends becomes live text.** The proposal is stored in a `proposals` map in the same
-Y.Doc, beside the prose, and a person accepts or rejects it. Being in the CRDT is what makes it
+**Nothing it proposes becomes live text.** The proposal is stored in a `proposals` map in the same
+Y.Doc, beside the prose, and somebody accepts or rejects it — a person in the document view, or an
+agent through the explicit accept path below. Being in the CRDT is what makes it
 appear in an open browser immediately and survive a disconnect; a proposal parked server-side until
 someone reloaded would be a second source of truth about the same document.
 
@@ -179,11 +182,51 @@ someone reloaded would be a second source of truth about the same document.
 agent reading from it would get block ids people had already moved past — and then every op it wrote
 would be dropped as stale. `open_room` puts the agent on the same replica the browsers are on.
 
-**Rust reads; the browser writes.** Turning markdown into ProseMirror nodes means knowing the
-editor's exact schema, and the editor is the only thing that does. So `src/api/docprops.rs` walks the
-CRDT to read and only ever writes the proposal record; `web/src/lib/doc-ops.ts` does the applying.
-The asymmetry is deliberate — Rust writing nodes it half-understands is how a shared document gets
-quietly corrupted.
+**Proposing and deciding are separate acts, and an agent may now do both.** Markdown is read
+**inline** as well as by block: `**bold**`, `*italic*`/`_italic_`, `~~strike~~`, `` `code` `` and
+`[label](url)` become the editor's marks in paragraphs, headings, list items, quotes and pipe-table
+cells (the closed grammar is spelled out in `web/src/lib/inline-markdown.ts`; code spans are verbatim,
+`\*` stays literal, an unmatched marker stays literal, and only http(s), mailto and relative links
+become links). Reads serialize those marks back, so an agent sees the formatting a reader sees and a
+read→replace round trip is still refused as a no-op.
+
+### The agent-accept path
+
+`POST /v1/mindmaps/{id}/proposals/{proposal}/accept|reject` and
+`POST /v1/documents/{id}/proposals/{proposal}/accept|reject` (MCP: `takomo_plan_accept`,
+`takomo_plan_reject`, `takomo_document_accept`, `takomo_document_reject`). The repository owner asked
+for it: an agent that was told to land a reviewed proposal, or that reviews another agent's, should not
+need a person to click Accept for it. The rule was "Rust reads; the browser writes", because turning
+markdown into ProseMirror nodes means knowing the editor's exact schema. It is now a guarded rule
+rather than a prohibition:
+
+- **`write` scope, recorded like a person.** `decided_by` is the calling actor and `decided_at` the
+  time, the same fields a browser decision writes; a plan decision also lands in the plan's history.
+  Only a `pending` proposal can be decided (`409 conflict.proposal_decided`), so a second decision
+  never overwrites the first. Rejecting only marks the record.
+- **Applied on the live replica.** The server opens the room (`open_room`, like proposing does) and
+  applies the ops inside one transaction there, so every connected editor receives the change and
+  concurrent typing merges instead of being overwritten. The update is flushed before the response.
+- **Same skip semantics as the browser.** An op whose block has gone is skipped, reported in
+  `skipped` and written onto the record as `dropped`; if no op applies nothing is written and the
+  proposal stays pending (`409 conflict.proposal_stale`) — an accept that landed nothing is not an
+  acceptance.
+- **The server's converter is held to the browser's.** `src/api/proposal_apply.rs` ports
+  `markdownToNodes` and the inline grammar step for step. `web/src/lib/proposal-parity.test.ts` runs
+  the real browser accept (Tiptap with the section editor's schema, Collaboration on a Y.Doc, block ids
+  minted by the BlockId plugin) and commits what lands in the CRDT to
+  `tests/fixtures/proposal-markdown.json` — node names, every attribute including fresh `blk_…` ids,
+  code languages and table-cell attrs, and marks as y-prosemirror's formatting attributes — plus 450+
+  inline strings with their parsed runs. The Rust tests replay every case and must produce the same
+  tree; a drift on either side turns one of them red.
+- **What cannot be matched is refused.** The browser parses an HTML table or `<details>` block with
+  the DOM and the editor's `parseHTML` rules; this binary has no such parser. A proposal containing
+  one is refused before anything is written (`422 validation.proposal_unsupported`) and a person can
+  still accept it in the browser.
+
+Two browser/agent decisions racing on the same proposal are not consensus, exactly as two browsers
+racing are not (`decideProposal` in `web/src/lib/plan-proposals.ts` documents that window); the
+server checks `pending` on its own replica, which every connected browser shares.
 
 **Scope is enforced, not requested.** A run may name the block ids it may touch; an op outside them
 is dropped and reported in `skipped`, which is also shown to the reviewer — a proposal smaller than
@@ -271,7 +314,8 @@ A table is one top-level block with a stable `blk_…` id. Agent reads serialize
 inside the annotated Markdown, retaining header cells, `rowspan`, `colspan`, `colwidth`, and
 rich cell content. A proposal's `markdown` can contain this HTML table, including blank lines,
 or a rectangular Markdown pipe table with a header separator (`---`). Use HTML for merged
-cells and rich content; pipe cell text is plain text. Replacing a table remains a whole-block
+cells and block content; pipe cells carry inline marks (`**bold**`, `` `code` ``, links). An HTML
+table can only be accepted in the browser; the agent-accept path refuses it. Replacing a table remains a whole-block
 proposal and requires acceptance, just like replacing a paragraph. Cell-level proposal diffs
 and spreadsheet formulas are not provided.
 

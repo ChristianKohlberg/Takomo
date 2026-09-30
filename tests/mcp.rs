@@ -3332,6 +3332,140 @@ async fn an_agent_proposes_to_a_section_and_the_prose_does_not_move() {
     assert!(kinds.contains(&"proposed"), "{trace}");
 }
 
+/// An agent may now DECIDE on a proposal, not only make one.
+///
+/// Accepting over MCP applies the ops on the live replica and records the
+/// caller as `decided_by`; rejecting only marks the record; and a proposal
+/// already decided is refused with a stable code rather than decided twice.
+#[tokio::test]
+async fn an_agent_accepts_and_rejects_proposals_over_mcp() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    let (_, made) = app
+        .post(
+            &app.admin,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (_, out) = app
+        .post(
+            &app.admin,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "API", "notes": "Versioning is undecided." }),
+        )
+        .await;
+    let node = out["nodes"][0]["id"].as_str().unwrap().to_string();
+    let (read, _) = app
+        .tool(
+            &app.worker,
+            "takomo_plan_read",
+            json!({ "id": map, "node": node }),
+        )
+        .await;
+    let block = read["markdown"]
+        .as_str()
+        .unwrap()
+        .split("<!-- ")
+        .nth(1)
+        .and_then(|r| r.split(' ').next())
+        .unwrap()
+        .to_string();
+
+    let (prop, err) = app
+        .tool(
+            &app.worker2,
+            "takomo_plan_propose",
+            json!({ "id": map, "node": node,
+                    "ops": [{ "op": "replace", "id": block, "markdown": "Decided: **v1** forever." }] }),
+        )
+        .await;
+    assert!(!err, "{prop}");
+    let pid = prop["proposal"].as_str().unwrap().to_string();
+
+    let (accepted, err) = app
+        .tool(
+            &app.worker,
+            "takomo_plan_accept",
+            json!({ "id": map, "proposal": pid }),
+        )
+        .await;
+    assert!(!err, "{accepted}");
+    assert_eq!(accepted["status"], "accepted", "{accepted}");
+    assert_eq!(accepted["proposal"]["decided_by"], "agent:w1", "{accepted}");
+    let (after, _) = app
+        .tool(
+            &app.worker,
+            "takomo_plan_read",
+            json!({ "id": map, "node": node }),
+        )
+        .await;
+    assert!(
+        after["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("Decided: **v1** forever."),
+        "{after}"
+    );
+
+    let (again, err) = app
+        .tool(
+            &app.worker2,
+            "takomo_plan_reject",
+            json!({ "id": map, "proposal": pid }),
+        )
+        .await;
+    assert!(err, "{again}");
+    assert_eq!(again["code"], "conflict.proposal_decided", "{again}");
+
+    // The document twin.
+    let id = a_document(&app, "Chorleitung").await;
+    seed_prose(
+        &app,
+        &id,
+        &[("paragraph", "blk_aaa", "Wenn jemand absagt.")],
+    )
+    .await;
+    let (prop, err) = app
+        .tool(
+            &app.worker2,
+            "takomo_document_propose",
+            json!({ "id": id, "ops": [{ "op": "delete", "id": "blk_aaa" }] }),
+        )
+        .await;
+    assert!(!err, "{prop}");
+    let pid = prop["proposal"].as_str().unwrap().to_string();
+    let (rejected, err) = app
+        .tool(
+            &app.worker,
+            "takomo_document_reject",
+            json!({ "id": id, "proposal": pid }),
+        )
+        .await;
+    assert!(!err, "{rejected}");
+    assert_eq!(rejected["status"], "rejected", "{rejected}");
+    let (doc, _) = app
+        .tool(&app.worker, "takomo_document_read", json!({ "id": id }))
+        .await;
+    assert!(
+        doc["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("Wenn jemand absagt."),
+        "a rejected delete leaves the text: {doc}"
+    );
+    let (none, err) = app
+        .tool(
+            &app.worker,
+            "takomo_document_accept",
+            json!({ "id": id, "proposal": "prop-none" }),
+        )
+        .await;
+    assert!(err, "{none}");
+    assert_eq!(none["code"], "notfound.proposal", "{none}");
+}
+
 /// A `read` MCP tool must not rewrite the plan, the way its REST twin must not.
 ///
 /// `takomo_plan_read` and `takomo_mindmap_show` both opened the room and ran the

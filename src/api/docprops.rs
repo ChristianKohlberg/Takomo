@@ -24,21 +24,21 @@
 //! the prompt, which is the point: telling a model to stay in its lane is not the
 //! same as knowing it did.
 //!
-//! ## Nothing an agent writes is live text
+//! ## Nothing an agent proposes is live text
 //!
 //! A proposal is stored **beside** the prose, in a `proposals` map in the same
-//! Y.Doc, and a person accepts or rejects it. Two consequences worth stating:
+//! Y.Doc, and somebody accepts or rejects it. It is in the CRDT, so every
+//! connected peer sees it the moment it lands and it survives a disconnect. A
+//! proposal held server-side until somebody opened the page would be a second
+//! source of truth about the same document.
 //!
-//! - It is in the CRDT, so every connected peer sees it the moment it lands and
-//!   it survives a disconnect. A proposal held server-side until somebody opened
-//!   the page would be a second source of truth about the same document.
-//! - **Applying it is the browser's job, not this module's.** Turning markdown
-//!   into ProseMirror nodes means knowing the editor's exact schema, and the
-//!   editor is the only thing that does. Rust writing nodes it half-understands
-//!   is how a shared document gets quietly corrupted.
-//!
-//! So Rust READS the document (walking the CRDT is unambiguous) and WRITES only
-//! the proposal record. The asymmetry is deliberate.
+//! Accepting used to be the browser's job alone, because turning markdown into
+//! ProseMirror nodes means knowing the editor's exact schema. An agent may now
+//! accept too (`POST …/proposals/{id}/accept`), and the server then applies the
+//! ops itself — through `proposal_apply`, a twin of the browser's converter that
+//! is held to the browser's output by a committed fixture and refuses what it
+//! cannot match. Proposing and deciding remain two separate acts: nothing an
+//! agent PROPOSES is live until somebody, person or agent, decides on it.
 //!
 //! ## The scope is enforced, not requested
 //!
@@ -47,6 +47,7 @@
 //! selected one paragraph expects the rest to be untouched, and a model's
 //! agreement to that is not evidence.
 
+use crate::api::proposal_apply::{element_runs, inline_markdown};
 use crate::error::{ApiError, ApiResult};
 use serde_json::{json, Value};
 use yrs::types::xml::XmlOut;
@@ -89,6 +90,14 @@ pub struct Block {
     pub items: Vec<String>,
     /// Tables use HTML to retain cell boundaries, spans and rich content.
     pub html: Option<String>,
+    /// The block's inline content as markdown — `**bold**`, `_italic_`,
+    /// `` `code` ``, `~~strike~~`, `[label](url)` — so an agent sees the
+    /// formatting a reader sees, and proposing a block back unchanged is still
+    /// recognised as a no-op. `text` stays plain for everything that searches
+    /// or summarises.
+    pub markdown: String,
+    /// `items`, as inline markdown.
+    pub item_markdown: Vec<String>,
 }
 
 /// Read the document as markdown annotated with block ids.
@@ -107,13 +116,31 @@ pub fn read_blocks<T: ReadTxn>(txn: &T, frag: &yrs::XmlFragmentRef) -> Vec<Block
     let mut out = Vec::new();
     for node in frag.children(txn) {
         let XmlOut::Element(el) = node else { continue };
-        let items: Vec<String> = el
+        let children: Vec<yrs::XmlElementRef> = el
             .children(txn)
             .filter_map(|c| match c {
-                XmlOut::Element(child) => Some(element_text(txn, &child)),
+                XmlOut::Element(child) => Some(child),
                 _ => None,
             })
             .collect();
+        let items: Vec<String> = children.iter().map(|c| element_text(txn, c)).collect();
+        // Only for the kinds `markdown_for` renders from it: the verified
+        // round trip parses the text again, and a table or a code block would
+        // pay for a rendering nobody reads.
+        let tag = el.tag();
+        let item_markdown: Vec<String> = if matches!(tag.as_ref(), "bulletList" | "orderedList") {
+            children
+                .iter()
+                .map(|c| inline_markdown(&element_runs(txn, c)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let markdown = if matches!(tag.as_ref(), "paragraph" | "heading" | "blockquote") {
+            inline_markdown(&element_runs(txn, &el))
+        } else {
+            String::new()
+        };
         out.push(Block {
             id: attr_string(txn, &el, "id").unwrap_or_default(),
             kind: el.tag().to_string(),
@@ -125,6 +152,8 @@ pub fn read_blocks<T: ReadTxn>(txn: &T, frag: &yrs::XmlFragmentRef) -> Vec<Block
             text: element_text(txn, &el),
             items,
             html: (el.tag().as_ref() == "table").then(|| element_html(txn, &el)),
+            markdown,
+            item_markdown,
         });
     }
     out
@@ -293,7 +322,7 @@ fn markdown_for(b: &Block) -> String {
         "table" => b.html.clone().unwrap_or_default(),
         "heading" => {
             let level = b.level.unwrap_or(1).clamp(1, 6) as usize;
-            format!("{} {}", "#".repeat(level), b.text)
+            format!("{} {}", "#".repeat(level), b.markdown)
         }
         "codeBlock" => format!(
             "```{}\n{}\n```",
@@ -301,25 +330,26 @@ fn markdown_for(b: &Block) -> String {
             b.text
         ),
         "blockquote" => b
-            .text
+            .markdown
             .lines()
             .map(|l| format!("> {l}"))
             .collect::<Vec<_>>()
             .join("\n"),
         "horizontalRule" => "---".to_string(),
         "bulletList" => b
-            .items
+            .item_markdown
             .iter()
             .map(|i| format!("- {i}"))
             .collect::<Vec<_>>()
             .join("\n"),
         "orderedList" => b
-            .items
+            .item_markdown
             .iter()
             .enumerate()
             .map(|(n, i)| format!("{}. {i}", n + 1))
             .collect::<Vec<_>>()
             .join("\n"),
+        "paragraph" => b.markdown.clone(),
         _ => b.text.clone(),
     }
 }
