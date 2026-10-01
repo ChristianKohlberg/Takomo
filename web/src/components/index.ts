@@ -273,6 +273,7 @@ export { DocumentClassificationPolicy } from './settings/DocumentClassificationP
 export { SectionTicketLinks } from './documents/SectionTicketLinks'
 
 export { DocumentNumberingControls, useDocumentNumbering } from './documents/DocumentNumberingControls'
+export { DocumentZoomControl, DocumentZoomSteps, useDocumentZoom, type DocumentZoom } from './documents/DocumentZoom'
 export { DocumentEmbeddingStatus } from './documents/DocumentEmbeddingStatus'
 export { EmbeddingStatusProvider } from '../hooks/useEmbeddingStatus'
 
