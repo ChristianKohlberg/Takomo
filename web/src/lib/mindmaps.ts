@@ -225,9 +225,14 @@ export function patchMindmap(
   })
 }
 
-/** Throw a map away. Ordinary — see the module note. */
+/** Delete a project's specification. Admin only, and the id is repeated as
+ *  `confirm_id` — the server refuses the deletion without it. */
 export function deleteMindmap(token: string, id: string): Promise<unknown> {
-  return api(token, `/mindmaps/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  return api(token, `/mindmaps/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: json,
+    body: JSON.stringify({ confirm_id: id }),
+  })
 }
 
 export interface NodeAdd {

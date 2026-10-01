@@ -188,23 +188,50 @@ pub async fn reset(
     Ok(Json(json!({ "mindmap": map.to_json() })))
 }
 
-/// DELETE /v1/mindmaps/{id} (write) — throw it away, nodes and all.
+/// DELETE /v1/mindmaps/{id} (admin) — delete the project's specification.
 ///
-/// An ordinary thing to do, and the clearest statement of what a mindmap is. What
-/// its branches *became* is untouched: those graduated and are work in their own
-/// right. The response says how many nodes went, so a caller that deleted the
-/// wrong map knows immediately.
+/// A mindmap is a project's specification, and this removes every section with
+/// it, so it is guarded the way a reset is: the `admin` scope and a body that
+/// repeats the id (`{"confirm_id":"<id>"}`). What its sections *became* — epics
+/// and initiatives promoted from them — is untouched. The response says how many
+/// sections went, so a caller that deleted the wrong one knows immediately.
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
+    body: axum::body::Bytes,
 ) -> ApiResult<Json<Value>> {
-    ctx.require_scope("write")?;
+    ctx.require_scope("admin")?;
     let existing = state
         .store
         .get_mindmap(&id)?
         .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
     ctx.require_project(&existing.project)?;
+    // Parsed by hand rather than through `ApiJson`: a DELETE that predates the
+    // confirmation arrives with no body at all, and the answer to that is "say
+    // which map", not a complaint about JSON.
+    let confirm = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|value| value.as_object().cloned());
+    let Some(obj) = confirm else {
+        return Err(ApiError::bad_request(
+            "validation.field_required",
+            "Deleting a specification needs a JSON body repeating its id: {\"confirm_id\":\"<mindmap id>\"}.",
+        )
+        .remedy(format!(
+            "Send DELETE /v1/mindmaps/{id} with {{\"confirm_id\":\"{id}\"}} and an admin token. To empty the specification but keep it, use POST /v1/mindmaps/{id}/reset."
+        )));
+    };
+    reject_unknown(&obj, &["confirm_id"])?;
+    if require_str(&obj, "confirm_id")? != id {
+        return Err(ApiError::validation(
+            "validation.confirm_id",
+            "confirm_id must exactly match the id of the specification being deleted.".to_string(),
+        )
+        .remedy(format!(
+            "Check that {id} is the specification you mean to delete, then send {{\"confirm_id\":\"{id}\"}}."
+        )));
+    }
     let nodes = state.store.delete_mindmap(&id, &ctx.actor)?;
     // A socket held open on something that no longer exists must not go on
     // writing into it; `resync_frozen` reads "I cannot resolve this" as

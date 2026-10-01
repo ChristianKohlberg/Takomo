@@ -1500,7 +1500,7 @@ cmd_mindmap() {
        takomo mindmap show ID [--node NODE]
        takomo mindmap add ID TEXT [--parent NODE]
        takomo mindmap promote ID NODE --to epic|initiative
-       takomo mindmap rm ID
+       takomo mindmap rm ID --confirm ID
 
 A mindmap is a tree you grow at conversation speed, before any of it is an idea.
 A node is a sentence or two; when a branch turns out to matter, promote it."
@@ -1686,14 +1686,29 @@ print("The node stays on the map, carrying what it became.")
 PY
 }
 
+# Deletes the project's specification, so it is guarded like the route: an
+# admin token, and the id typed a second time as --confirm.
 cmd_mindmap_rm() {
-  local id=${1:-}; [ -n "$id" ] || die "mindmap rm: ID is required"
-  api DELETE "/v1/mindmaps/$(urlenc "$id")" >/dev/null
+  local id=${1:-}; [ -n "$id" ] || die "mindmap rm: usage: takomo mindmap rm ID --confirm ID"
+  shift
+  local confirm=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --confirm) [ $# -ge 2 ] || die "mindmap rm: --confirm needs the id"; confirm=$2; shift 2 ;;
+      --confirm=*) confirm=${1#--confirm=}; shift ;;
+      *) die "mindmap rm: unknown argument '$1' (usage: takomo mindmap rm ID --confirm ID)" ;;
+    esac
+  done
+  [ -n "$confirm" ] || die "mindmap rm: deleting a specification removes every section and cannot be undone.
+Repeat its id to confirm: takomo mindmap rm $id --confirm $id  (needs an admin token)"
+  [ "$confirm" = "$id" ] || die "mindmap rm: --confirm '$confirm' does not match '$id'; nothing was deleted"
+  local data; data=$(TS_ID="$confirm" python3 -c 'import json,os;print(json.dumps({"confirm_id":os.environ["TS_ID"]}))')
+  api DELETE "/v1/mindmaps/$(urlenc "$id")" "$data" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-print(f"deleted, with {d.get('removed_nodes', 0)} node(s)")
-print("Anything its branches became — epics, initiatives — is untouched.")
+print(f"deleted, with {d.get('removed_nodes', 0)} section(s)")
+print("Epics and initiatives promoted from it are untouched.")
 PY
 }
 
@@ -4250,14 +4265,14 @@ Mindmaps (brainstorming, before any of it is an idea):
   takomo mindmap show ID [--node NODE]     the tree, with node ids beside it
   takomo mindmap add ID "a thought" [--parent NODE]
   takomo mindmap promote ID NODE --to epic|initiative
-  takomo mindmap rm ID
+  takomo mindmap rm ID --confirm ID       admin only; deletes the specification
          A tree you grow at conversation speed. A node is a sentence or two —
          that brevity is the method. When a branch turns out to matter, promote
          it: `epic` makes an epic with its children as tickets, `initiative`
          makes one seeded with the subtree. The node stays either way, carrying
          what it became, so the map keeps working as navigation afterwards.
-         A mindmap is scratch by design: `rm` is ordinary, and what its branches
-         became is untouched.
+         `rm` deletes the whole specification, so it needs an admin token and
+         the id repeated; what its sections became is untouched.
 
 Lanes and review handoffs:
   takomo lane ls [--project P] [--limit N --offset N]   ·   takomo lane new TITLE [--project P]

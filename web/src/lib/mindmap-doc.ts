@@ -39,7 +39,12 @@ export type NodeOrigin = 'human' | 'agent'
 /** Caps. The API holds these too; the editor holds them because the server no
  *  longer sees an individual keystroke — a socket write arrives already merged. */
 export const MAX_TITLE = 280
-export const MAX_NOTES = 8000
+/** A section's prose written as plain text (`notes`): mirrors `MAX_NOTES` in
+ *  Rust. Sections are long in practice, so this bounds one write, not a page. */
+export const MAX_NOTES = 200_000
+/** The longest section the map's plain notes box still offers to edit. Past it
+ *  a textarea is the wrong tool, and the dialog hands over to the document. */
+export const MAX_DIALOG_NOTES = 8000
 export const MAX_NODES = 500
 export const MAX_RELATIONSHIPS = 1000
 export const MAX_ATTACHMENTS = 20

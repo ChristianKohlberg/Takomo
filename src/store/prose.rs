@@ -13,13 +13,12 @@
 //!
 //! What keeps it is the notes box: the map offers one plain-text field per node,
 //! and `patch_node` writes it through `set_plain_text`. So this DOES touch prose
-//! that already has content, which the sentence here used to deny — it replaces
-//! the section wholesale and re-mints every block id. That is a real trade and
-//! the browser side documents it deliberately: a section's headings and lists,
-//! written in `/documents`, do not survive somebody typing in the map's notes
-//! box, and a pending proposal addressing those blocks is invalidated. The plain
-//! field is the map's whole idea of prose; the structure lives on the other
-//! surface.
+//! that already has content — it replaces the section wholesale and re-mints
+//! every block id, which invalidates a pending proposal addressing those blocks.
+//! It is only allowed where nothing else is lost: [`is_plain`] gates it, and a
+//! section with headings, lists, tables, marks or references is refused
+//! (`conflict.notes_would_flatten`) instead of flattened. Rich prose changes
+//! through the document view or a proposal.
 //!
 //! What it generates is unchanged: the small subset of blocks
 //! `docprops::read_blocks` already round-trips — a paragraph and a bullet list,
@@ -111,10 +110,45 @@ pub fn plain_text<T: ReadTxn>(txn: &T, frag: &XmlFragmentRef) -> String {
     lines.join("\n")
 }
 
+/// Whether a fragment holds nothing but plain paragraphs.
+///
+/// "Plain" is exactly what [`set_plain_text`] writes: top-level `paragraph`
+/// elements carrying no attribute but their block `id`, whose only children are
+/// text runs without marks. Anything else — a heading, a list, a table, a code
+/// block, a collapsible block, a section reference, a hard break, a bold word,
+/// a link — is structure the plain-text path cannot carry, so replacing it with
+/// [`set_plain_text`] would flatten it. Callers ask this first and refuse
+/// rather than flatten; `patch_node` is the one that matters.
+///
+/// An empty fragment is plain: there is nothing in it to lose.
+pub fn is_plain<T: ReadTxn>(txn: &T, frag: &XmlFragmentRef) -> bool {
+    use yrs::types::text::YChange;
+    use yrs::Text;
+    frag.children(txn).all(|child| match child {
+        XmlOut::Element(el) => {
+            el.tag().as_ref() == "paragraph"
+                && el.attributes(txn).all(|(key, _)| key == "id")
+                && el.children(txn).all(|inner| match inner {
+                    XmlOut::Text(text) => {
+                        text.diff(txn, YChange::identity).into_iter().all(|part| {
+                            part.attributes
+                                .as_ref()
+                                .is_none_or(|attrs| attrs.is_empty())
+                                && matches!(part.insert, Out::Any(Any::String(_)))
+                        })
+                    }
+                    _ => false,
+                })
+        }
+        XmlOut::Text(_) | XmlOut::Fragment(_) => false,
+    })
+}
+
 /// Replace a fragment's whole content with these paragraphs.
 ///
 /// A wholesale replace, because this is the path a caller takes when it sends a
-/// finished string over the API. Somebody typing in the browser edits the same
+/// finished string over the API. Only ever call it on a fragment that
+/// [`is_plain`] accepts: on anything richer it would flatten the structure. Somebody typing in the browser edits the same
 /// fragment character by character through the editor, which is where the merge
 /// actually matters.
 pub fn set_plain_text(txn: &mut TransactionMut, frag: &XmlFragmentRef, text: &str) {
@@ -201,5 +235,58 @@ mod tests {
         let txn = doc.transact();
         assert_eq!(plain_text(&txn, &frag), "the second thing");
         let _ = XmlFragmentPrelim::default();
+    }
+
+    #[test]
+    fn plain_paragraphs_and_an_empty_section_are_plain() {
+        let doc = Doc::new();
+        let frag: yrs::XmlFragmentRef = doc.get_or_insert_xml_fragment("prose");
+        assert!(is_plain(&doc.transact(), &frag), "empty");
+        set_plain_text(&mut doc.transact_mut(), &frag, "one\ntwo");
+        assert!(is_plain(&doc.transact(), &frag));
+    }
+
+    #[test]
+    fn structure_marks_and_references_are_not_plain() {
+        use yrs::types::Attrs;
+        use yrs::{Text, XmlElementPrelim as El, XmlTextPrelim as T};
+        // One case per shape the notes box would lose.
+        type Build = fn(&mut yrs::TransactionMut, &yrs::XmlFragmentRef);
+        let cases: [(&str, Build); 5] = [
+            ("heading", |txn, frag| {
+                let h = frag.push_back(txn, El::empty("heading"));
+                h.push_back(txn, T::new("Title"));
+            }),
+            ("table", |txn, frag| {
+                frag.push_back(txn, El::empty("table"));
+            }),
+            ("section reference", |txn, frag| {
+                let p = frag.push_back(txn, El::empty("paragraph"));
+                p.push_back(txn, El::empty("sectionReference"));
+            }),
+            ("paragraph attribute", |txn, frag| {
+                let p = frag.push_back(txn, El::empty("paragraph"));
+                p.insert_attribute(txn, "textAlign", "center");
+                p.push_back(txn, T::new("centred"));
+            }),
+            ("bold mark", |txn, frag| {
+                let p = frag.push_back(txn, El::empty("paragraph"));
+                let text = p.push_back(txn, T::new(""));
+                let mut bold = Attrs::new();
+                bold.insert("bold".into(), Any::Map(Default::default()));
+                text.insert_with_attributes(txn, 0, "loud", bold);
+            }),
+        ];
+        for (name, build) in cases {
+            let doc = Doc::new();
+            let frag: yrs::XmlFragmentRef = doc.get_or_insert_xml_fragment("prose");
+            {
+                let mut txn = doc.transact_mut();
+                let p = frag.push_back(&mut txn, El::empty("paragraph"));
+                p.push_back(&mut txn, T::new("plain lead"));
+                build(&mut txn, &frag);
+            }
+            assert!(!is_plain(&doc.transact(), &frag), "{name} read as plain");
+        }
     }
 }

@@ -46,7 +46,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  MAX_NOTES,
+  MAX_DIALOG_NOTES,
   NODE_KINDS,
   type MapNode,
   type NodeFields,
@@ -83,6 +83,10 @@ export interface NodeDialogLabels {
   missingSection?: string
   notesPreview?: string
   editNotes?: string
+  /** The hand-over for a section the plain notes box must not rewrite. */
+  editInDocument: string
+  /** Why the notes box is not offered for this section. */
+  notesInDocument: string
   notesHint: string
   notesCount: string
   kind: string
@@ -111,6 +115,16 @@ export interface NodeDialogLabels {
 
 export interface NodeDialogProps {
   previewContent?: ReactNode
+  /**
+   * Whether the plain notes box may edit this section: false for a section with
+   * structure (tables, headings, lists, marks, references…) or one too long for
+   * a textarea. Such a section is shown as a short read-only preview with a way
+   * into the document view, because rewriting it as plain text would flatten or
+   * truncate it. Defaults to true.
+   */
+  notesEditable?: boolean
+  /** Opens this section in the document view (`section=<id>`). */
+  onEditInDocument?: (id: string) => void
   /** The thought being read, or null while closed. */
   node: MapNode | null
   canWrite: boolean
@@ -133,9 +147,14 @@ export interface NodeDialogProps {
 const FIELD =
   'border-border-soft bg-card text-foreground w-full rounded-md border px-2 py-1.5 text-[12px] disabled:opacity-50'
 
+/** How much of a long section the read-only preview shows. */
+const PREVIEW_CHARS = 600
+
 export function NodeDialog({
   node,
   previewContent,
+  notesEditable = true,
+  onEditInDocument,
   canWrite,
   relations,
   titleOf,
@@ -193,7 +212,9 @@ export function NodeDialog({
   const about = aboutId ? (titleOf.get(aboutId) ?? aboutId) : null
 
   const commitNotes = () => {
-    if (canWrite && notes !== node.notes) onNotes(node.id, notes)
+    // A section the notes box does not own is never written from here, whatever
+    // the draft holds: the write would flatten or truncate it.
+    if (canWrite && notesEditable && notes !== node.notes) onNotes(node.id, notes)
   }
   const commitEdgeLabel = () => {
     if (canWrite && edgeLabel !== node.edge_label) onFields(node.id, { edge_label: edgeLabel })
@@ -250,6 +271,7 @@ export function NodeDialog({
             )}
           </div>
 
+          {notesEditable ? (
           <div className="flex min-w-0 flex-col gap-1.5">
             <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-muted-foreground text-[10.5px] font-[650]">{labels.notes}</span>
               {labels.notesPreview && canWrite && <Button variant="ghost" size="sm" onClick={() => { commitNotes(); setPreview(value => !value) }}>{preview ? (labels.editNotes ?? labels.notes) : labels.notesPreview}</Button>}
@@ -259,7 +281,7 @@ export function NodeDialog({
               aria-label={labels.notes}
               value={notes}
               disabled={!canWrite}
-              maxLength={MAX_NOTES}
+              maxLength={MAX_DIALOG_NOTES}
               rows={5}
               placeholder={labels.notesHint}
               onChange={(e) => setNotes(e.target.value)}
@@ -269,9 +291,31 @@ export function NodeDialog({
             <span className="text-muted-foreground text-[10px]">
               {labels.notesCount
                 .replace('{n}', String(notes.length))
-                .replace('{max}', String(MAX_NOTES))}
+                .replace('{max}', String(MAX_DIALOG_NOTES))}
             </span>
           </div>
+          ) : (
+          <div className="flex min-w-0 flex-col gap-1.5" data-testid="notes-in-document">
+            <span className="text-muted-foreground text-[10.5px] font-[650]">{labels.notes}</span>
+            {/* Clamped: this is a glimpse of the section, and the document is
+                where it is read and written in full. */}
+            <div className="relative max-h-48 overflow-hidden rounded-md border">
+              {previewContent ?? (
+                <Markdown
+                  text={node.notes.length > PREVIEW_CHARS ? `${node.notes.slice(0, PREVIEW_CHARS)}…` : node.notes}
+                  className="md min-w-0 p-3 text-sm [&_*]:break-words"
+                />
+              )}
+              <div className="from-background pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t" />
+            </div>
+            <span className="text-muted-foreground text-[10.5px]">{labels.notesInDocument}</span>
+            {onEditInDocument && (
+              <Button size="sm" variant="outline" className="w-fit" onClick={() => { commitEdgeLabel(); onEditInDocument(node.id) }}>
+                {labels.editInDocument}
+              </Button>
+            )}
+          </div>
+          )}
 
           <div className="grid grid-cols-2 gap-1.5">
             <label className="flex flex-col gap-0.5">

@@ -16520,9 +16520,10 @@ async fn a_branch_becomes_an_initiative_seeded_with_its_subtree() {
 }
 
 #[tokio::test]
-async fn throwing_a_map_away_is_ordinary_and_leaves_what_it_produced() {
-    // The clearest statement of what a mindmap is. An initiative is nurtured; a
-    // map is scratch — but the work its branches became is work in its own right.
+async fn deleting_a_specification_leaves_what_it_produced() {
+    // Deleting the specification is an admin act with the id confirmed (see
+    // tests/specification_safety.rs) — and the work its sections became is work
+    // in its own right, so it stays.
     let app = TestApp::spawn().await;
     let (_, made) = app
         .post(
@@ -16550,7 +16551,11 @@ async fn throwing_a_map_away_is_ordinary_and_leaves_what_it_produced() {
     let epic = promoted["created"]["id"].as_str().unwrap().to_string();
 
     let (s, gone) = app
-        .delete(&app.worker, &format!("/v1/mindmaps/{map}"))
+        .delete_with(
+            &app.admin,
+            &format!("/v1/mindmaps/{map}"),
+            json!({ "confirm_id": map }),
+        )
         .await;
     assert_eq!(s, StatusCode::OK, "{gone}");
     assert_eq!(gone["removed_nodes"], json!(2), "{gone}");
@@ -16636,8 +16641,8 @@ async fn mindmaps_list_is_a_bounded_envelope_and_the_archive_gate_applies() {
         assert_eq!(s, StatusCode::CREATED, "{made}");
     }
 
-    // A project holds ONE brainstorm, and the refusal names the map it already
-    // has — the caller almost always wanted that one.
+    // A project holds ONE specification, and the refusal names the one it
+    // already has — the caller almost always wanted that one.
     let (s, second) = app
         .post(
             &app.worker,
@@ -16651,9 +16656,14 @@ async fn mindmaps_list_is_a_bounded_envelope_and_the_archive_gate_applies() {
         second["message"].as_str().unwrap().contains("mm-"),
         "the refusal should name the existing map: {second}"
     );
+    let remedy = second["remedy"].as_str().unwrap();
     assert!(
-        second["remedy"].as_str().unwrap().contains("promote"),
-        "and point at the way out: {second}"
+        remedy.contains("/nodes") && remedy.contains("one specification"),
+        "and point at opening the existing one: {second}"
+    );
+    assert!(
+        !remedy.contains("DELETE"),
+        "never advise deleting the specification to make room: {second}"
     );
 
     let (s, page) = app.get(&app.worker, "/v1/mindmaps?limit=2").await;
@@ -18445,25 +18455,30 @@ async fn notes_are_the_long_form_and_the_title_refusal_now_points_at_them() {
         "patching notes leaves the title alone: {patched}"
     );
 
-    // 8,000 characters is where notes stop being one thought's long form.
+    // The cap is one bounded plain-text write of a section's prose; long
+    // sections are ordinary, so it sits far above a page of text.
     let (s, refused) = app
         .patch(
             &app.worker,
             &format!("/v1/mindmaps/{map}/nodes/{node}"),
-            json!({ "notes": "n".repeat(8_001) }),
+            json!({ "notes": "n".repeat(200_001) }),
         )
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
     assert_eq!(refused["code"], "validation.mindmap_notes", "{refused}");
     assert!(
-        refused["message"].as_str().unwrap().contains("initiative"),
-        "the refusal names where the long form belongs: {refused}"
+        !refused["message"].as_str().unwrap().contains("initiative"),
+        "a long section is not a reason to leave the specification: {refused}"
+    );
+    assert!(
+        refused["remedy"].as_str().unwrap().contains("propos"),
+        "the refusal names where long text goes: {refused}"
     );
     let (s, ok) = app
         .patch(
             &app.worker,
             &format!("/v1/mindmaps/{map}/nodes/{node}"),
-            json!({ "notes": "n".repeat(8_000) }),
+            json!({ "notes": "n".repeat(200_000) }),
         )
         .await;
     assert_eq!(s, StatusCode::OK, "exactly at the cap is fine: {ok}");

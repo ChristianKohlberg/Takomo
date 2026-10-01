@@ -99,6 +99,7 @@ import {
   reparent,
   setFields,
   setNotes,
+  notesEditable,
   setTitle,
   updateAttachment,
 } from '@/lib/mindmap-crdt'
@@ -251,7 +252,9 @@ export interface LiveProps {
   voiceEnabled: boolean
   voiceLabels: VoiceButtonLabels
   onRenameMap: () => void
-  onDeleteMap: () => void
+  /** Opens the confirmed deletion of the specification. Absent for a viewer
+   *  who may not delete it (admin only), and then the command is not offered. */
+  onDeleteMap?: () => void
   labels: LiveLabels
   canvasLabels: CanvasLabels
   outlineLabels: OutlineLabels
@@ -667,9 +670,11 @@ function ConnectedLive({
   )
   const onNotes = useCallback(
     (id: string, notes: string) => {
-      if (guard()) setNotes(ydoc, id, notes)
+      // Refused when the section gained structure while the box was open: the
+      // plain text would flatten it, so it is not written and the person is told.
+      if (guard() && !setNotes(ydoc, id, notes)) onError(nodeLabels.notesInDocument)
     },
-    [guard, ydoc],
+    [guard, ydoc, onError, nodeLabels.notesInDocument],
   )
   const onRemoveRelation = useCallback(
     (id: string) => {
@@ -852,6 +857,7 @@ function ConnectedLive({
       return {
         canWrite,
         canManageMap,
+        canDeleteMap: Boolean(onDeleteMap),
         nodeCount: nodes.length,
         projectCount: projects.length,
         node: node
@@ -866,7 +872,7 @@ function ConnectedLive({
           : null,
       }
     },
-    [canWrite, canManageMap, nodes, projects.length, descendantCounts, collapsed],
+    [canWrite, canManageMap, onDeleteMap, nodes, projects.length, descendantCounts, collapsed],
   )
 
   const commandContext = useMemo(() => contextFor(selected), [contextFor, selected])
@@ -1036,7 +1042,7 @@ function ConnectedLive({
           onRenameMap()
           break
         case 'map.delete':
-          onDeleteMap()
+          onDeleteMap?.()
           break
         default:
           break
@@ -1267,6 +1273,12 @@ function ConnectedLive({
         onOpenChange={(open) => !open && closeViewing()}
         onOpenAttachments={setAttaching}
         onNotes={onNotes}
+        notesEditable={viewingNode ? notesEditable(ydoc, viewingNode.id) : true}
+        onEditInDocument={(id) => {
+          closeViewing()
+          if (onOpenDocument) onOpenDocument(id, false)
+          else onOpenPlan(id)
+        }}
         onFields={onFields}
         onRemoveRelation={onRemoveRelation}
         onAnswer={onAnswerQuestion}

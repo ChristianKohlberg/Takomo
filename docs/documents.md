@@ -725,6 +725,14 @@ history, so the cleared sections cannot come back through Undo. New edits,
 including previously unsynced concurrent changes, still merge normally. Reset is
 not a storage purge or a barrier against new edits. It emits `mindmap_reset`.
 
+Deleting the specification outright is a separate, stronger act:
+`DELETE /v1/mindmaps/{id}` with the same `{"confirm_id":"<mindmap id>"}` body and
+the same `admin` requirement removes the map itself, its sections and history,
+so nothing is left to reopen. The Map view offers it to admins only, as
+**Delete the specification…** in ⌘K, behind the same two steps (the second takes
+the ID or the title). Prefer the reset when the project should keep its
+specification.
+
 The same settings control supports initiative documents:
 `POST /v1/initiatives/{id}/reset` with the exact `confirm_id` clears their summary
 and entries (including views, notes, amendments, discussions, proposals and

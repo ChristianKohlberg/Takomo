@@ -221,6 +221,11 @@ export { CommandPalette } from './mindmap/CommandPalette'
 export type { CommandPaletteProps, CommandPaletteLabels, PaletteItem } from './mindmap/CommandPalette'
 export { PruneDialog } from './mindmap/PruneDialog'
 export type { PruneDialogProps, PruneDialogLabels } from './mindmap/PruneDialog'
+export { DeleteSpecificationDialog, confirmsSpecification } from './mindmap/DeleteSpecificationDialog'
+export type {
+  DeleteSpecificationDialogProps,
+  DeleteSpecificationLabels,
+} from './mindmap/DeleteSpecificationDialog'
 export { DetachDialog } from './mindmap/DetachDialog'
 export type { DetachDialogProps, DetachDialogLabels } from './mindmap/DetachDialog'
 export { AttachmentsDialog } from './mindmap/AttachmentsDialog'

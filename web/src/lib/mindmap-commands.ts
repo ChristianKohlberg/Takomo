@@ -65,6 +65,12 @@ export interface CommandContext {
    * from `canWrite`.
    */
   canManageMap: boolean
+  /**
+   * Whether this viewer may delete the whole map — the project's specification.
+   * An admin-only, confirmed act (`DELETE /v1/mindmaps/{id}` needs the admin
+   * scope and the id repeated), so it is a separate question from managing it.
+   */
+  canDeleteMap?: boolean
   node: CommandNode | null
   nodeCount: number
   /** How many projects this token can reach. One is nothing to switch between. */
@@ -119,7 +125,7 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
   if (ctx.canWrite && ctx.nodeCount > 0) out.push('map.tidy')
   if (ctx.canManageMap) out.push('map.rename')
   if (ctx.projectCount > 1) out.push('map.project')
-  if (ctx.canManageMap) out.push('map.delete')
+  if (ctx.canDeleteMap) out.push('map.delete')
   return out
 }
 
