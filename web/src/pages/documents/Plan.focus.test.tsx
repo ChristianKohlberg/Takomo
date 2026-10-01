@@ -362,12 +362,14 @@ describe('section focus', () => {
 // sets, inside a column 600 px tall, so a section's position depends on every
 // section above it — which is exactly what changes while editors mount. It is
 // installed on the prototypes, so it is in place before the first render.
-function fakeLayout(heights: Map<string, number>) {
+function fakeLayout(heights: Map<string, number>, zoom = 1) {
+  // `heights` are page pixels; under the reader's CSS zoom the column sees them scaled.
+  const heightOf = (section: HTMLElement) => (heights.get(section.dataset.section ?? '') ?? 200) * zoom
   const state = { scrollTop: 0 }
   const isColumn = (element: Element) => !!element.firstElementChild?.classList.contains('document-page') ||
     !!element.querySelector(':scope > .document-page')
   const sections = () => [...document.querySelectorAll<HTMLElement>('.document-section')]
-  const total = () => sections().reduce((sum, section) => sum + (heights.get(section.dataset.section ?? '') ?? 200), 0)
+  const total = () => sections().reduce((sum, section) => sum + heightOf(section), 0)
   const originalTop = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')!
   const originalHeight = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')!
   const originalClient = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')!
@@ -392,7 +394,7 @@ function fakeLayout(heights: Map<string, number>) {
     if (this.classList.contains('document-section')) {
       let top = 0
       for (const section of sections()) {
-        const height = heights.get(section.dataset.section ?? '') ?? 200
+        const height = heightOf(section)
         if (section === this) return new DOMRect(0, 50 + top - state.scrollTop, 800, height)
         top += height
       }
@@ -422,6 +424,23 @@ describe('navigating to a section', () => {
     await pause(50)
     heights.set(billing, 1500)
     heights.set(terms, 1100)
+    await waitFor(() => expect(offsetOf(reports)).toBe(0))
+    await pause(100)
+    expect(offsetOf(reports)).toBe(0)
+  })
+
+  it.each([0.5, 1.5])('pins the heading at the top on the first outline click at %s zoom', async (zoom) => {
+    localStorage.setItem('takomo:document-zoom:p', String(zoom))
+    const { billing, invoices, terms, reports, props } = setup()
+    const heights = new Map([[billing, 900], [invoices, 1200], [terms, 400], [reports, 3000]])
+    open(props)
+    const row = await screen.findByRole('treeitem', { name: '2 Reports' })
+    expect(document.querySelector<HTMLElement>('.document-page')!.style.getPropertyValue('--document-zoom')).toBe(String(zoom))
+    const { offsetOf } = fakeLayout(heights, zoom)
+    fireEvent.click(within(row).getByRole('button', { name: '2 Reports' }))
+    await waitFor(() => expect(offsetOf(reports)).toBe(0))
+    heights.set(invoices, 2600)
+    heights.set(billing, 1500)
     await waitFor(() => expect(offsetOf(reports)).toBe(0))
     await pause(100)
     expect(offsetOf(reports)).toBe(0)
