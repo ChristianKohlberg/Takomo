@@ -1,0 +1,15 @@
+/* Document zoom (`lib/document-zoom.ts`): the column scales, the chrome does not.
+   The factor arrives as a custom property on `.document-page` only. */
+.document-page { zoom: var(--document-zoom, 1); }
+
+/* Paper has its own size: a print is always at 100 %. */
+@media print { .document-page { zoom: 1 !important; } }
+
+/* The −/+ steps sit beside the dropdown in a wide pane; in a narrow one they
+   fold into the toolbar's Tools overflow (the dropdown itself always stays). */
+.document-zoom-step { display: none; }
+.document-zoom-overflow { display: flex; }
+@container document-pane (min-width: 850px) {
+  .document-zoom-step { display: inline-flex; }
+  .document-zoom-overflow { display: none; }
+}
