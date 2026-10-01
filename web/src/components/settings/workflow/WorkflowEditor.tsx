@@ -4,7 +4,7 @@ import { useSettingsDraft } from '@/components/settings/SettingsDrafts'
 // Everything is a DRAFT until Apply. Nothing here writes the project's workflow
 // as a side effect of editing, because the thing being edited decides which
 // ticket transitions are legal — an autosave would change what a running fleet
-// is allowed to do, halfway through a thought.
+// is allowed to do, halfway through a section.
 //
 // Validation is the server's. `validateWorkflow` runs the same check the PUT
 // runs, debounced, so a draft cannot be called clean here and refused there.

@@ -1,22 +1,20 @@
-//! Mindmaps: the ten minutes before any of it is an idea.
+//! Mindmaps: a project's specification.
 //!
-//! A tree grown at conversation speed — a project idea fanning out into API,
-//! integrations, workflows, ideas; six words a node; a branch split in two the
-//! moment it turns out to be two thoughts. Then, when a branch is worth keeping,
-//! it graduates into an epic or an initiative and the node keeps the link.
+//! One tree of sections, which the Document, Map and Promises views render from
+//! one shared document. A section can be promoted into an epic or an initiative,
+//! and the section keeps a reference to what it became.
 //!
-//! **It is a brainstorming method and nothing more.** No workflow, no claim, no
-//! lease, no ready queue, no assignment, no comments, no attachments. Two rules
-//! follow from that and shape everything here:
+//! **It is a specification, not work.** No workflow, no claim, no lease, no ready
+//! queue, no assignment. Two rules shape everything here:
 //!
 //! - **Deleting one is guarded.** A mindmap is the project's specification, so
 //!   `DELETE` needs the `admin` scope and the id repeated as `confirm_id`, like a
 //!   reset. It cascades the sections; the epics and initiatives promoted from
 //!   them are untouched, because those are work in their own right.
 //!
-//! - **A node is capped short** (`mindmapdoc::MAX_TITLE`). That is the method, not a
-//!   limitation: a thought needing more than a sentence or two has stopped being a
-//!   brainstorm node and wants to be an initiative, and the refusal says so.
+//! - **A section title is capped short** (`mindmapdoc::MAX_TITLE`): it is a
+//!   heading. The section's text lives in its prose, which the document view
+//!   edits and agents change through proposals.
 //!
 //! Growth is bounded everywhere it could be unbounded, because every write here
 //! runs under the process-wide write mutex that serializes the ready queue: a
@@ -24,8 +22,8 @@
 //! capped ([`MAX_DEPTH`]) — the same ceiling the initiative folder tree uses.
 //!
 //! **The nodes are not here.** They live in one Yjs document per map
-//! ([`super::mindmapdoc`]), because a brainstorm is something several people and
-//! an agent grow at the same time, and rows where the last writer wins throw one
+//! ([`super::mindmapdoc`]), because a specification is something several people
+//! and agents edit at the same time, and rows where the last writer wins throw one
 //! of them away without saying so. What stays in SQL is everything a list has to
 //! answer without opening a document: the map's own row.
 
@@ -42,11 +40,9 @@ pub const MAX_MINDMAPS_PAGE: i64 = 200;
 
 /// How many mindmaps a project may hold.
 ///
-/// One, for now. A project has one brainstorm the way it has one board: the
-/// question "which map?" is not one anybody wanted to answer, and a rail of
-/// half-started maps is how a surface stops being used. A branch that turns out
-/// to be its own subject promotes into an initiative or an epic — that is the
-/// way out, and it always was.
+/// One. A project has one specification the way it has one board: the question
+/// "which specification?" is not one anybody wanted to answer. Work that grows
+/// out of a section is promoted into an epic or an initiative instead.
 ///
 /// The DATA MODEL is deliberately untouched: `mindmaps` is still a table keyed
 /// by project, every read still filters and pages, and lifting this to several
@@ -55,7 +51,7 @@ pub const MAX_MINDMAPS_PAGE: i64 = 200;
 ///
 /// It bounds creation only. A project that already holds more than one — from
 /// before this existed — keeps them, lists them and can open them; nothing here
-/// deletes somebody's thinking to enforce a new rule.
+/// deletes somebody's specification to enforce a new rule.
 pub const MAX_MINDMAPS_PER_PROJECT: i64 = 1;
 
 const MAX_TITLE: usize = 300;
@@ -63,10 +59,10 @@ const MAX_SUMMARY: usize = 2000;
 
 /// The three labels a map can carry — the same vocabulary an initiative uses,
 /// because they answer the same question and a second spelling would be a second
-/// thing to learn. `distilled` = its branches have graduated.
+/// thing to learn. `distilled` = its sections have been promoted into work.
 pub const MINDMAP_STATUSES: [&str; 3] = ["open", "parked", "distilled"];
 
-/// What a branch can graduate into.
+/// What a section can be promoted into.
 pub const PROMOTION_TARGETS: [&str; 2] = ["epic", "initiative"];
 
 #[derive(Debug, Clone, Default)]
@@ -466,8 +462,8 @@ impl Store {
     /// Delete a map — a project's specification — with all its sections. The
     /// admin scope and the id confirmation are checked by the route.
     ///
-    /// Nodes cascade. What a branch *became* does not: an epic or initiative that
-    /// graduated is work in its own right, and it left the map when it graduated.
+    /// Sections cascade. What a section *became* does not: an epic or initiative
+    /// promoted from it is work in its own right.
     pub fn delete_mindmap(&self, id: &str, actor: &str) -> ApiResult<i64> {
         let now = now_ms();
         self.with_tx(|tx| {
@@ -607,12 +603,12 @@ pub fn validate_promotion_target(target: &str) -> ApiResult<()> {
 
 /// The three shape changes worth an event.
 ///
-/// A brainstorm generates edits constantly; only these three are things another
+/// A specification is edited constantly; only these three are things another
 /// reader of the project would want to know about.
 #[derive(Debug, Clone, Copy)]
 pub enum MindmapChange {
-    /// Nodes were added — one event for the batch, because ten nodes from an
-    /// agent turn are one act of brainstorming.
+    /// Sections were added — one event for the batch, because ten sections from
+    /// an agent turn are one act.
     Grown,
     /// A node was reparented. Placement and text changes emit nothing.
     Moved,
@@ -665,13 +661,13 @@ impl BranchPromotion<'_> {
 }
 
 impl Store {
-    /// Graduate a branch into an epic or an initiative.
+    /// Promote a section into an epic or an initiative.
     ///
     /// Called from inside the map's document mutation, and the ORDER matters:
     /// the caller checks the branch is not already promoted, calls this, and
     /// only writes the promotion link back into the document once this has
     /// returned an id. A link written first would point at nothing if the work
-    /// behind it failed; a link never written would let the same thought become
+    /// behind it failed; a link never written would let the same section become
     /// a second, indistinguishable epic on the next attempt.
     pub fn promote_branch(&self, promotion: &BranchPromotion, actor: &str) -> ApiResult<Value> {
         validate_promotion_target(promotion.target)?;

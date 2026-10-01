@@ -1505,23 +1505,17 @@ CREATE TABLE IF NOT EXISTS initiative_entries (
 );
 CREATE INDEX IF NOT EXISTS idx_initiative_entries_initiative ON initiative_entries(initiative);
 
--- Mindmaps: the ten minutes BEFORE any of this is an idea, let alone work.
+-- Mindmaps: a project's specification.
 --
--- A tree you grow at conversation speed — six words a node, split one in two the
--- moment it turns out to be two thoughts — whose branches can graduate into epics
--- and initiatives afterwards. It is a brainstorming method and nothing more, so
--- there is no workflow, no claim, no lease, no ready queue, no assignment and no
--- attachments here.
+-- One tree of sections, shown as the Document, Map and Promises views over one
+-- shared CRDT document. A section can be promoted into an epic or an initiative,
+-- which keeps a reference back to it. There is no workflow, no claim, no lease,
+-- no ready queue and no assignment here: what separates it from tickets is that
+-- nothing in it is work until somebody promotes it.
 --
--- What separates it from an initiative is the right to be thrown away: an
--- initiative is nurtured, a mindmap is scratch, and DELETE is an ordinary thing to
--- do to one (nodes cascade). What separates it from tickets is that nothing in it
--- is work until somebody says so.
---
--- `title` is the root. A map starts from one thing and everything hangs off it, so
--- the root is the map rather than a node inside it. `status` is a plain label —
--- the same three an initiative uses, where `distilled` means its branches have
--- graduated.
+-- `title` is the root. A specification starts from one thing and every section
+-- hangs off it, so the root is the map rather than a node inside it. `status` is
+-- a plain label — the same three an initiative uses.
 CREATE TABLE IF NOT EXISTS mindmaps (
   id         TEXT PRIMARY KEY,
   project    TEXT NOT NULL REFERENCES projects(id),
@@ -1545,15 +1539,12 @@ CREATE TABLE IF NOT EXISTS mindmaps (
 );
 CREATE INDEX IF NOT EXISTS idx_mindmaps_project ON mindmaps(project, status);
 
--- One thought. Capped short on purpose (see MAX_NODE_TEXT): a sentence or two IS
--- the method, and a node that outgrows it has stopped being a brainstorm node and
--- wants to be an initiative.
 -- What happened to a section of the plan, who did it, and when.
 --
 -- The plan is one thing the map and the document render two ways, and this is
 -- its history. Not the CRDT update log — that is the mechanism which rebuilds
 -- the text, is written per flush, and is REWRITTEN by compaction. This is the
--- record of acts somebody would name: a thought written, renamed, moved,
+-- record of acts somebody would name: a section written, renamed, moved,
 -- reviewed, a proposal accepted.
 --
 -- In SQL rather than in the document for three reasons: it references a real
@@ -1596,6 +1587,9 @@ CREATE INDEX IF NOT EXISTS idx_plan_trace_map ON plan_trace(mindmap, at);
 CREATE INDEX IF NOT EXISTS idx_plan_trace_node ON plan_trace(node, at) WHERE node IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_plan_trace_user ON plan_trace("user", at) WHERE "user" IS NOT NULL;
 
+-- Sections as rows, from before they moved into the shared document. No longer
+-- read: `mindmaps::adopt_legacy_nodes` converts them once and leaves the rows so
+-- a conversion can still be checked.
 CREATE TABLE IF NOT EXISTS mindmap_nodes (
   id            TEXT PRIMARY KEY,
   mindmap       TEXT NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,
@@ -1611,14 +1605,13 @@ CREATE TABLE IF NOT EXISTS mindmap_nodes (
   -- been arranged stays exactly where it was left.
   x             REAL,
   y             REAL,
-  -- What this branch became once it graduated: ('epic', 'tp-a1d8') or
+  -- What this section was promoted to: ('epic', 'tp-a1d8') or
   -- ('initiative', 'ini-9f3k'). Deliberately no REFERENCES — the same reason
   -- `tickets.schedule` carries none: deleting the map must leave the work, and
   -- deleting the work must leave the record of where it came from.
   --
-  -- This pair is what lets a map stay useful after the brainstorm, as a picture of
-  -- what the thinking turned into. Promotion never moves a node: the map is the
-  -- record of how you got there.
+  -- This pair is the back-reference from a section to the work promoted from
+  -- it. Promotion never moves a node: the section stays where it is.
   promoted_kind TEXT,
   promoted_id   TEXT,
   created_by    TEXT NOT NULL,

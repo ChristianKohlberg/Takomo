@@ -10,7 +10,7 @@ import { useSpecification } from '../specification/context'
 // two things kept in step: a node is a section, its title is the heading, its
 // depth is the heading level, and tree order is reading order
 // (`spec/one-model-two-views.md`). The canvas is for growing and grouping
-// thoughts fast; this is where they are spelled out, and where the history of
+// sections fast; this is where they are spelled out, and where the history of
 // who wrote and who agreed is visible.
 //
 // What used to be here was a FILE BROWSER over `documents` rows, filled by

@@ -1,9 +1,8 @@
 //! Dictation, and the reason the key never reaches the browser.
 //!
-//! Speaking is the fastest way to fill a mindmap — a brainstorm arrives faster
-//! than it can be typed, and the 280-character node cap exists precisely because
-//! a thought at that size is one sentence somebody said. So the map takes
-//! dictation.
+//! Speaking is the fastest way to lay down a specification's outline — faster
+//! than typing — and a section title is about one sentence somebody said. So
+//! the map takes dictation.
 //!
 //! The transcription itself happens in the BROWSER, talking straight to
 //! AssemblyAI over a WebSocket: audio does not travel through this server, which

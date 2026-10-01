@@ -337,7 +337,7 @@ export function visibleNodes(
   return nodes.filter((n) => !hidden.has(n.id))
 }
 
-/** How many thoughts a collapsed branch is holding back. */
+/** How many sections a collapsed branch is holding back. */
 export function hiddenCount(nodes: readonly MapNode[], id: string): number {
   return descendantsOf(nodes, id).length
 }

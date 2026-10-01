@@ -1,4 +1,4 @@
-// Removing a thought, and everything growing out of it.
+// Removing a section, and everything growing out of it.
 //
 // A leaf is asked about once, because losing one first-draft sentence is the
 // cheapest mistake on this surface. A branch is asked about TWICE, and the second
@@ -21,7 +21,7 @@ import {
 
 export interface PruneDialogLabels {
   title: string
-  /** First question. `{title}` is the node, `{n}` the thoughts beneath it. */
+  /** First question. `{title}` is the node, `{n}` the sections beneath it. */
   body: string
   bodyLeaf: string
   /** Second question — a branch only. `{n}` is the count again, deliberately. */
@@ -36,7 +36,7 @@ export interface PruneDialogLabels {
 export interface PruneDialogProps {
   /** The node to remove, or null when the dialog is closed. */
   node: { id: string; title: string } | null
-  /** How many thoughts hang beneath it. Zero makes this a single question. */
+  /** How many sections hang beneath it. Zero makes this a single question. */
   descendants: number
   /** Other people in the map right now, by name. */
   peers: string[]

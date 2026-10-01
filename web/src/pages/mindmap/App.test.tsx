@@ -1,4 +1,4 @@
-// From a thought on the map straight to its section in the document.
+// From a section on the map straight to its section in the document.
 //
 // The right-click menu (reached here by Shift+F10, which opens the same menu on
 // the selected node), ⌘K and the phone outline's `⋯` all offer "Open in
@@ -90,7 +90,7 @@ async function openNodeMenu() {
   let menu: HTMLElement | null = null
   await waitFor(() => {
     fireEvent.keyDown(canvas, { key: 'F10', shiftKey: true })
-    menu = screen.getByRole('menu', { name: 'This thought' })
+    menu = screen.getByRole('menu', { name: 'This section' })
   })
   return menu!
 }
@@ -113,8 +113,8 @@ describe.each([
     mount(canWrite)
     const items = within(await openNodeMenu()).getAllByRole('menuitem').map((item) => item.textContent)
     expect(items.slice(0, 2)).toEqual(['Open in document', 'Focus in document'])
-    if (canWrite) expect(items).toContain('Rename this thought')
-    else expect(items).not.toContain('Rename this thought')
+    if (canWrite) expect(items).toContain('Rename this section')
+    else expect(items).not.toContain('Rename this section')
   })
 
   it('opens the document at the section', async () => {
@@ -139,7 +139,7 @@ describe.each([
 })
 
 describe('the command palette', () => {
-  it('offers both entries for the selected thought and runs them', async () => {
+  it('offers both entries for the selected section and runs them', async () => {
     mount(false)
     await waitFor(() => expect(where()).toContain(`section=${nodeId}`))
     await waitFor(() => {
@@ -148,8 +148,8 @@ describe('the command palette', () => {
     })
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText('Open in document')).toBeTruthy()
-    // With a thought in scope "Read it as the plan" would be the same jump twice.
-    expect(within(dialog).queryByText('Read it as the plan')).toBeNull()
+    // With a section in scope "Read it as the document" would be the same jump twice.
+    expect(within(dialog).queryByText('Read it as the document')).toBeNull()
     fireEvent.click(within(dialog).getByText('Focus in document'))
     await waitFor(() =>
       expect(where()).toBe(
@@ -163,7 +163,7 @@ describe('the outline row menu', () => {
   it('offers both entries to a reader and opens the document at the section', async () => {
     mount(false)
     await waitFor(() => expect(where()).toContain(`section=${nodeId}`))
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Actions for this thought' }))[0]!)
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Actions for this section' }))[0]!)
     fireEvent.click(await screen.findByRole('button', { name: 'Open in document' }))
     await waitFor(() =>
       expect(where()).toBe(`/projects/vetbill/specification?view=document&section=${nodeId}`),

@@ -1,6 +1,6 @@
-// Cutting the line between a thought and its parent.
+// Cutting the line between a section and its parent.
 //
-// Nothing is removed here: the child becomes a first-ring thought and everything
+// Nothing is removed here: the child becomes a first-ring section and everything
 // under it comes along. So why two questions, when a leaf deletion gets one?
 //
 // Because of how it is REACHED. Every other structural change on this canvas is a
@@ -29,12 +29,12 @@ import {
 
 export interface DetachDialogLabels {
   title: string
-  /** First question. `{title}` is the thought, `{parent}` what it hangs off. */
+  /** First question. `{title}` is the section, `{parent}` what it hangs off. */
   body: string
   /** Second question. `{title}` again, deliberately. */
   confirmTitle: string
   confirmBody: string
-  /** `{n}` thoughts travel with it. Omitted from the sentence when it is a leaf. */
+  /** `{n}` sections travel with it. Omitted from the sentence when it is a leaf. */
   carries: string
   /** Other people in the map right now, by name. */
   watching: string
@@ -46,7 +46,7 @@ export interface DetachDialogLabels {
 export interface DetachDialogProps {
   /** The edge to cut, or null when the dialog is closed. */
   edge: { child: { id: string; title: string }; parentTitle: string } | null
-  /** How many thoughts travel with the child. Zero is legitimate. */
+  /** How many sections travel with the child. Zero is legitimate. */
   carries: number
   peers: string[]
   onOpenChange: (open: boolean) => void

@@ -16173,7 +16173,10 @@ async fn a_node_is_capped_at_a_sentence_or_two_and_the_refusal_says_why() {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
     assert_eq!(refused["code"], "validation.mindmap_node_text");
     assert!(
-        refused["remedy"].as_str().unwrap().contains("promote"),
+        refused["remedy"]
+            .as_str()
+            .unwrap()
+            .contains("section's text"),
         "the refusal must point at the way out: {refused}"
     );
 
@@ -18500,8 +18503,8 @@ async fn notes_are_the_long_form_and_the_title_refusal_now_points_at_them() {
         "the way out now includes the node's notes: {refused}"
     );
     assert!(
-        remedy.contains("initiative"),
-        "and still names promotion: {refused}"
+        remedy.contains("proposal"),
+        "and names proposals for the text: {refused}"
     );
 }
 

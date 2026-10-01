@@ -163,7 +163,7 @@ fn project_claim_ttls(tx: &Connection, project: &str) -> ApiResult<(i64, i64)> {
 ///
 /// Over the maximum is a 422, not a silent clamp — a caller that asked for four
 /// hours and received one would otherwise heartbeat on the wrong schedule and
-/// lose the lease it thought it had.
+/// lose the lease it section it had.
 pub fn clamp_ttl_for(tx: &Connection, project: &str, ttl_seconds: Option<i64>) -> ApiResult<i64> {
     let (default_ttl, max_ttl) = project_claim_ttls(tx, project)?;
     let ttl = ttl_seconds.unwrap_or(default_ttl);

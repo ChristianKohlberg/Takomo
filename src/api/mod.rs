@@ -245,7 +245,7 @@ pub async fn documents_page() -> impl axum::response::IntoResponse {
     secure_html(INDEX_HTML)
 }
 
-/// `GET /mindmaps` — brainstorming, before any of it is an idea. Same document as
+/// `GET /mindmaps` — the specification's Map view. Same document as
 /// every other surface; the router picks this one from the path.
 pub async fn mindmaps_page() -> impl axum::response::IntoResponse {
     secure_html(INDEX_HTML)

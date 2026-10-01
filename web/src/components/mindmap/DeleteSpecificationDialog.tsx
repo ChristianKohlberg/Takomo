@@ -1,6 +1,6 @@
 // Deleting a project's specification: two steps and a typed confirmation.
 //
-// The map is the project's specification, not scratch, so one `window.confirm`
+// The map is the project's specification, so one `window.confirm`
 // was one mis-click away from losing every section. This mirrors "Reset a
 // document" in Settings: a warning, then a second step where the person types
 // the specification's id or title before the button arms. The server asks for

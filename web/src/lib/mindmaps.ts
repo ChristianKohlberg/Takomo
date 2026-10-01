@@ -1,12 +1,12 @@
-// The /v1/mindmaps surface — brainstorming, before any of it is an idea.
+// The /v1/mindmaps surface — a project's specification, one tree of sections.
 //
 // Two shapes are worth knowing before reading the calls. The detail read returns
-// the map AND every node, because a canvas cannot draw half a tree — affordable
-// because a map is capped at 500 nodes. And adding nodes takes a batch, because
-// that is what an agent adding a branch sends; a single node is the same call
-// with one entry.
+// the specification AND every section, because a canvas cannot draw half a tree
+// — affordable because a specification is capped at 500 sections. And adding
+// sections takes a batch, because that is what an agent adding a branch sends; a
+// single section is the same call with one entry.
 //
-// See docs/mindmaps.md for what a mindmap deliberately is not.
+// See docs/mindmaps.md for the Map view and how it relates to the document.
 import { api } from './api'
 
 export type MindmapStatus = 'open' | 'parked' | 'distilled'
@@ -17,7 +17,7 @@ export const MINDMAP_STATUSES: readonly MindmapStatus[] = [
   'distilled',
 ] as const
 
-/** A node is a sentence or two. The cap is the method — see the store module. */
+/** A section title is a heading. The cap keeps the outline readable. */
 export const MAX_NODE_TEXT = 280
 
 export interface Mindmap {
@@ -28,7 +28,7 @@ export interface Mindmap {
   summary?: string
   status: MindmapStatus
   metadata?: Record<string, unknown>
-  /** How many thoughts hang off it. Derived server-side on every read. */
+  /** How many sections it holds. Derived server-side on every read. */
   nodes: number
   created_by?: string
   created_at: string
@@ -36,7 +36,7 @@ export interface Mindmap {
   version?: number
 }
 
-/** What a branch became once it graduated. */
+/** What a section was promoted to. */
 export interface Promoted {
   kind: 'epic' | 'initiative'
   id: string
@@ -243,7 +243,7 @@ export interface NodeAdd {
 }
 
 /**
- * Add thoughts. Always sent as a batch — one node is a batch of one, and having
+ * Add sections. Always sent as a batch — one section is a batch of one, and having
  * a single shape here means the page never has to decide which call to make.
  */
 export function addNodes(

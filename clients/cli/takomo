@@ -1488,10 +1488,10 @@ cmd_user_unmember() {
 
 
 
-# --- mindmaps: brainstorming, before any of it is an idea --------------------
+# --- mindmaps: a project's specification, one tree of sections --------------
 #
-# The terminal half of the surface. `show` prints the tree, `add` grows it, and
-# `promote` graduates a branch — the same three moves the canvas offers, for when
+# The terminal half of the surface. `show` prints the outline, `add` adds
+# sections, and `promote` creates an epic or initiative from a section — for when
 # you are already in a shell.
 cmd_mindmap() {
   local sub=${1:-}
@@ -1502,8 +1502,9 @@ cmd_mindmap() {
        takomo mindmap promote ID NODE --to epic|initiative
        takomo mindmap rm ID --confirm ID
 
-A mindmap is a tree you grow at conversation speed, before any of it is an idea.
-A node is a sentence or two; when a branch turns out to matter, promote it."
+A mindmap is a project's specification: one tree of sections, shown as the
+Document, Map and Promises views. A section title is a heading; promote a
+section to turn it into an epic or an initiative."
   shift
   case "$sub" in
     new)          cmd_mindmap_new "$@" ;;
@@ -1535,7 +1536,7 @@ d = json.load(open(sys.argv[1]))
 m = d.get("mindmap", {})
 print(f"{m.get('id')}  {m.get('title')}")
 print()
-print(f"Grow it:  takomo mindmap add {m.get('id')} \"a thought\"  [--parent NODE]")
+print(f"Add a section:  takomo mindmap add {m.get('id')} \"Section title\"  [--parent NODE]")
 print(f"Read it:  takomo mindmap show {m.get('id')}")
 PY
 }
@@ -1559,7 +1560,7 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 items = d.get("items", [])
 if not items:
-    print('(no mindmaps; start one with: takomo mindmap new "What it is about")')
+    print('(no specification; create one with: takomo mindmap new "What it is about")')
     sys.exit()
 print(f"{'ID':<14} {'NODES':>5}  {'STATUS':<10} TITLE")
 for m in items:
@@ -1599,8 +1600,8 @@ if guidance:
     print()
 
 def line(n, depth):
-    # The id sits beside the text because the next thing anyone does is hang a
-    # thought under one of these, and that takes an id.
+    # The id sits beside the text because the next thing anyone does is add a
+    # section under one of these, and that takes an id.
     promoted = n.get("promoted") or {}
     badge = f"  -> {promoted['kind']} {promoted['id']}" if promoted else ""
     print(f"{'  ' * depth}- {n.get('text','')}   [{n.get('id')}]{badge}")
@@ -1620,7 +1621,7 @@ if want:
 else:
     walk(None, 0)
     if not nodes:
-        print(f'(empty; add a thought with: takomo mindmap add {m.get("id")} "…")')
+        print(f'(empty; add a section with: takomo mindmap add {m.get("id")} "…")')
 PY
 }
 
@@ -4259,17 +4260,17 @@ Claiming & progressing (the fence is remembered locally after a claim):
   takomo move ID STATE       move to an arbitrary workflow state
   takomo release ID [REASON] return the ticket to the queue
 
-Mindmaps (brainstorming, before any of it is an idea):
+Specification (a project's mindmap: one tree of sections):
   takomo mindmap new TITLE [--project P]   the title is the root
   takomo mindmap ls [--project P] [--status open|parked|distilled]
-  takomo mindmap show ID [--node NODE]     the tree, with node ids beside it
-  takomo mindmap add ID "a thought" [--parent NODE]
+  takomo mindmap show ID [--node NODE]     the outline, with section ids beside it
+  takomo mindmap add ID "Section title" [--parent NODE]
   takomo mindmap promote ID NODE --to epic|initiative
   takomo mindmap rm ID --confirm ID       admin only; deletes the specification
-         A tree you grow at conversation speed. A node is a sentence or two —
-         that brevity is the method. When a branch turns out to matter, promote
-         it: `epic` makes an epic with its children as tickets, `initiative`
-         makes one seeded with the subtree. The node stays either way, carrying
+         The specification's outline. A section title is a heading; the
+         section's text is written in the document view or proposed. `promote`
+         turns a section into work: `epic` makes an epic with its children as
+         tickets, `initiative` one seeded with the subtree. The section stays either way, carrying
          what it became, so the map keeps working as navigation afterwards.
          `rm` deletes the whole specification, so it needs an admin token and
          the id repeated; what its sections became is untouched.

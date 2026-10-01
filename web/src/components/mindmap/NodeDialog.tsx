@@ -1,4 +1,4 @@
-// Reading and changing one thought, in one place.
+// Reading and changing one section, in one place.
 //
 // Two moves made this the only detail surface there is. The canvas card used to
 // be the editor — a title textarea drawn over the node, a notes box, two selects,
@@ -9,7 +9,7 @@
 // every click on the map threw a panel across it whether or not anybody had asked
 // to open anything. Selecting is not opening.
 //
-// So the card is a title and its marks, and this is where a thought is read and
+// So the card is a title and its marks, and this is where a section is read and
 // changed. Everything the expanded card showed is here — who wrote it, what it
 // became, the whole notes, what is attached, the lines running to other branches
 // — alongside everything that was ever editable inline.
@@ -65,14 +65,14 @@ export type NodeShape = (typeof NODE_SHAPES)[number]
 export const NODE_COLORS = ['', '#fee2e2', '#ffedd5', '#fef9c3', '#dcfce7', '#dbeafe', '#f3e8ff']
 
 export interface NodeDialogLabels {
-  /** `{title}` is the thought being read. The title itself is not a field here. */
+  /** `{title}` is the section being read. The title itself is not a field here. */
   heading: string
   subtitle: string
-  /** Who wrote the thought — what the expanded card carried in its top strip. */
+  /** Who wrote the section — what the expanded card carried in its top strip. */
   origin: string
   originHuman: string
   originAgent: string
-  /** What this branch became, when it graduated. */
+  /** What this section was promoted into. */
   promoted: string
   /** The attachment list's heading. `{n}` is the count. */
   attachments: string
@@ -108,7 +108,7 @@ export interface NodeDialogLabels {
   answer: string
   answerHint: string
   answerAction: string
-  /** `{title}` is the thought the question is about. */
+  /** `{title}` is the section the question is about. */
   answerAbout: string
   answerAlone: string
 }
@@ -125,7 +125,7 @@ export interface NodeDialogProps {
   notesEditable?: boolean
   /** Opens this section in the document view (`section=<id>`). */
   onEditInDocument?: (id: string) => void
-  /** The thought being read, or null while closed. */
+  /** The section being read, or null while closed. */
   node: MapNode | null
   canWrite: boolean
   /** Only the relations touching this node. */
@@ -221,7 +221,7 @@ export function NodeDialog({
   }
 
   const close = () => {
-    // Whatever is still in a field is part of the thought, whether it was left
+    // Whatever is still in a field is part of the section, whether it was left
     // by Tab, by Escape or by the close button.
     commitNotes()
     commitEdgeLabel()
@@ -399,7 +399,7 @@ export function NodeDialog({
           </label>
 
           {/* A question is answered in a person's own words, and the answer goes
-              to the thought it was ABOUT rather than staying here — which is why
+              to the section it was ABOUT rather than staying here — which is why
               answering also removes the question. No model is asked anything. */}
           {isQuestion && (
             <div className="flex flex-col gap-1 border-l-2 border-violet-400 pl-2 dark:border-violet-500">
@@ -424,7 +424,7 @@ export function NodeDialog({
                 className="w-fit"
                 disabled={!canWrite || !answer.trim()}
                 onClick={() => {
-                  // The notes are part of the thought too, and answering ends
+                  // The notes are part of the section too, and answering ends
                   // this question — so they go first or they go nowhere.
                   commitNotes()
                   commitEdgeLabel()

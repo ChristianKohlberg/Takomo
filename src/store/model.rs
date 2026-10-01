@@ -666,11 +666,10 @@ impl Initiative {
     }
 }
 
-/// A mindmap: a tree grown at conversation speed, before any of it is an idea.
+/// A mindmap: a project's specification, one tree of sections.
 ///
-/// See `store/mindmaps.rs`. What separates it from an [`Initiative`] is not the
-/// shape but the stakes: an initiative is nurtured, a mindmap is scratch and
-/// deleting one is ordinary. Its `title` is the root everything hangs off.
+/// See `store/mindmaps.rs`. Its `title` is the root every section hangs off; the
+/// sections live in the map's shared document.
 #[derive(Debug, Clone)]
 pub struct Mindmap {
     pub id: String,
@@ -679,7 +678,7 @@ pub struct Mindmap {
     pub title: String,
     pub summary: String,
     /// open | parked | distilled. A label, not a state machine; `distilled` means
-    /// its branches have graduated into work.
+    /// its sections have been promoted into work.
     pub status: String,
     pub metadata: Value,
     pub created_by: String,
@@ -710,7 +709,7 @@ impl Mindmap {
     }
 }
 
-/// One thought on a mindmap.
+/// One section of a specification.
 #[derive(Debug, Clone)]
 pub struct MindmapNode {
     pub id: String,

@@ -1,8 +1,8 @@
 // Dictation on the map: speech in, nodes out.
 //
-// A brainstorm arrives faster than anyone types it, and the 280-character node
-// cap exists precisely because a node is one sentence somebody said. So the map
-// takes dictation, and each finished sentence becomes a node.
+// An outline can be spoken faster than anyone types it, and a section title is
+// about one sentence. So the map takes dictation, and each finished sentence
+// becomes a section.
 //
 // The audio goes STRAIGHT to the provider from this page. It never reaches
 // Takomo, which keeps a recording out of the server's request log and off its

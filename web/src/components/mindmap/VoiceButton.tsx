@@ -1,8 +1,8 @@
 // Dictation, as one button on the map's action bar.
 //
-// A brainstorm happens at talking speed, and the 280-character node cap says a
-// node is one sentence somebody said. So the map takes dictation: press once,
-// talk, and every finished sentence lands as a thought.
+// An outline can be spoken faster than it is typed, and a section title is about
+// one sentence. So the map takes dictation: press once,
+// talk, and every finished sentence lands as a section.
 //
 // The audio never touches Takomo — the page streams it to the provider itself
 // (see `lib/voice.ts`), which is what keeps a recording out of the server's log

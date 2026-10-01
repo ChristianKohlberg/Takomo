@@ -23,13 +23,13 @@ import { focusedLayout } from '@/lib/mindmap-focus'
 // panel across it whether or not the reader wanted one — which is why every node
 // is now drawn at exactly `NODE_WIDTH`×`NODE_HEIGHT` and the geometry in
 // `lib/mindmap-layout.ts` is the only thing that decides where anything is.
-// Reading a thought properly is `NodeDialog`, reached by the pill, ⌘K and the
+// Reading a section properly is `NodeDialog`, reached by the pill, ⌘K and the
 // right-click menu.
 //
 // THE ONE TEXT CARET ON THIS CANVAS IS A TITLE. A node being named draws its
-// title as an input, so a new thought is typed straight onto the map instead of
+// title as an input, so a new section is typed straight onto the map instead of
 // through a modal; `NodeNameInput` stops every event that would otherwise pan,
-// zoom, fold or prune while somebody is typing. Everything else about a thought
+// zoom, fold or prune while somebody is typing. Everything else about a section
 // is a field in the dialog.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
@@ -125,7 +125,7 @@ export interface CanvasProps {
   focusRoot?: string | null
   searchMatches?: ReadonlySet<string>
   relationships: Relationship[]
-  /** Branches this viewer has folded, and how many thoughts sit under each node
+  /** Branches this viewer has folded, and how many sections sit under each node
    *  in the WHOLE tree — the fold handle needs both, and only one of them
    *  survives the filter that produced `nodes`. */
   collapsed: ReadonlySet<string>
@@ -142,7 +142,7 @@ export interface CanvasProps {
    */
   naming: string | null
   /** The caret closed with a name in it. `then` is what the key that closed it
-   *  asked for next: Enter stays on this thought, Tab goes a level deeper. */
+   *  asked for next: Enter stays on this section, Tab goes a level deeper. */
   onNameCommit: (id: string, title: string, then: NameThen) => void
   /** Escape. What that does to the node is the page's decision. */
   onNameCancel: (id: string) => void
@@ -169,7 +169,7 @@ export interface CanvasProps {
   canWrite: boolean
   labels: CanvasLabels
   /** What a card's marks are called. A card is a title and its marks; the whole
-   *  of a thought is the dialog, one level up. */
+   *  of a section is the dialog, one level up. */
   cardLabels: NodeCardLabels
   relationsFor: (id: string) => Relationship[]
   titleOf: ReadonlyMap<string, string>
@@ -217,7 +217,7 @@ export interface CanvasProps {
   testsFor?: (id: string) => { total: number; failing: number } | null
   /** Tint every node by how confident we are in it. A lens, off by default. */
   trustLens: boolean
-  /** A double-click into empty space: a thought that does not know where it goes
+  /** A double-click into empty space: a section that does not know where it goes
    *  yet, pinned where it was dropped. World coordinates. */
   onCreateAt: (at: Point) => void
   /** Clicking the line between a node and its parent. The page asks twice before
@@ -353,7 +353,7 @@ export function Canvas({
   const nextModeLabel = nextMode === 'custom' ? labels.custom : nextMode === 'tidy' ? labels.tree : labels.radial
   const byId = new Map(placed.nodes.map((p) => [p.node.id, p]))
   // The node being named is drawn LAST. Every card is the same size now, so
-  // nothing overlaps by design — but a hand-placed thought can sit on top of
+  // nothing overlaps by design — but a hand-placed section can sit on top of
   // another, and in SVG there is no z-index, so paint order is the only way to
   // keep an open caret from ending up underneath one.
   const ordered = [...placed.nodes].sort(
@@ -727,7 +727,7 @@ export function Canvas({
         onPointerLeave={() => setHovered(null)}
         onContextMenu={(e) => {
           // The browser's own menu is never the right answer over a canvas: it
-          // offers "save image as" for a thought somebody wrote.
+          // offers "save image as" for a section somebody wrote.
           e.preventDefault()
           const screen = pointIn(e)
           const hit = hitAt(toWorld(screen, viewport))
@@ -747,17 +747,17 @@ export function Canvas({
           const hit = hitAt(world)
           if (hit) {
             // Double-click is rename, not open: the title is the one thing typed
-            // on the map, and everything else about a thought is the dialog.
+            // on the map, and everything else about a section is the dialog.
             rename(hit.node.id)
             return
           }
-          // Empty space: a loose thought, pinned where it was dropped and opened
-          // straight into its title. You do not always know where a thought
-          // goes, and forcing a parent is wrong for the ten minutes a brainstorm
-          // is for. Centred on the cursor, because that is where it was aimed.
+          // Empty space: a loose section, pinned where it was dropped and opened
+          // straight into its title. You do not always know where a section
+          // goes yet, and forcing a parent would be wrong while an outline is
+          // being laid down. Centred on the cursor, because that is where it was aimed.
           if (!canWrite) return
           // The root is outside `placed.nodes`. Grow a top-level section when
-          // it is double-clicked instead of placing a loose thought over it.
+          // it is double-clicked instead of placing a loose section over it.
           const onRoot =
             !focusRoot && world.x >= placed.root.x &&
             world.x <= placed.root.x + NODE_WIDTH &&
@@ -775,7 +775,7 @@ export function Canvas({
           {/* Edges first, so a node always draws over its own lines.
 
               A line to a PARENT is clickable, and the click offers to cut it —
-              the child becomes a first-ring thought and nothing is removed. The
+              the child becomes a first-ring section and nothing is removed. The
               hit target is a fat transparent stroke over the visible hairline,
               because a 1.5px line is not something a pointer can be asked to
               find. A first-ring node's line goes to the map itself rather than
@@ -947,7 +947,7 @@ export function Canvas({
                   y={strokeW / 2}
                   width={NODE_WIDTH - strokeW}
                   height={NODE_HEIGHT - strokeW}
-                  // A question is squarer than a thought: it is a different kind
+                  // A question is squarer than a section: it is a different kind
                   // of thing on the map, and shape says so before colour does.
                   rx={isQuestion ? 4 : cornerRadius(p.node.shape)}
                   // The resting border is a presentation attribute, not a class:
@@ -1061,7 +1061,7 @@ export function Canvas({
                 )}
 
                 {/* The verbs, only on selection, in the margin above the node.
-                    Not while it is being named: the caret is one thought's worth
+                    Not while it is being named: the caret is one section's worth
                     of attention and a toolbar over it is the rest of them. */}
                 {isSelected && !isNaming && pillVerbs.length > 0 && (
                   <foreignObject x={0} y={-38} width={NODE_WIDTH} height={34}>

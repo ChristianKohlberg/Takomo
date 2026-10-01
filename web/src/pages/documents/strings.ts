@@ -88,7 +88,7 @@ export const STR = defineStrings({
     pickProject: 'Pick a project to read its plan.',
     noPlan: 'This project has no plan yet.',
     noPlanHint:
-      'A plan starts on the map, where thoughts are grown and grouped. Every thought there is a section here.',
+      'The specification is one tree of sections, shown here as a document and on the map as a canvas. Every section on the map is a section here.',
     openMap: 'Open the map',
 
     connecting: 'Connecting…',
@@ -101,7 +101,7 @@ export const STR = defineStrings({
     needWrite: "This needs a token with the 'write' scope.",
 
     empty: 'The plan is empty.',
-    emptyHint: 'Add a thought on the map and it appears here as section 1.',
+    emptyHint: 'Add a section on the map and it appears here as section 1.',
     proseEmpty: 'Nothing written here yet.',
     proseLabel: 'Section {n}',
     untitled: 'Untitled section',
@@ -251,7 +251,7 @@ export const STR = defineStrings({
     pickProject: 'Projekt wählen, um dessen Plan zu lesen.',
     noPlan: 'Dieses Projekt hat noch keinen Plan.',
     noPlanHint:
-      'Ein Plan beginnt auf der Map, wo Gedanken wachsen und gruppiert werden. Jeder Gedanke dort ist hier ein Abschnitt.',
+      'Die Spezifikation ist ein Baum aus Abschnitten, hier als Dokument und auf der Map als Leinwand dargestellt. Jeder Abschnitt auf der Map ist hier ein Abschnitt.',
     openMap: 'Map öffnen',
 
     connecting: 'Verbinde…',
@@ -264,7 +264,7 @@ export const STR = defineStrings({
     needWrite: "Dafür wird ein Token mit dem Scope 'write' gebraucht.",
 
     empty: 'Der Plan ist leer.',
-    emptyHint: 'Leg auf der Map einen Gedanken an, dann steht er hier als Abschnitt 1.',
+    emptyHint: 'Leg auf der Map einen Abschnitt an, dann steht er hier als Abschnitt 1.',
     proseEmpty: 'Hier steht noch nichts.',
     proseLabel: 'Abschnitt {n}',
     untitled: 'Abschnitt ohne Titel',

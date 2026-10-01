@@ -4,12 +4,12 @@
 // a 375 px viewport is a worse way to read a tree than a list is, and the repo's
 // mobile lint rules exist precisely to stop a desktop shape being shipped as
 // though it worked. The list also happens to be the fastest thing to *add* to
-// with a thumb, which is what somebody on a phone is doing with a brainstorm.
+// with a thumb, which is what somebody on a phone is doing with an outline.
 //
-// It carries the same one caret the canvas does, and no more. Naming a thought is
-// what a brainstorm is made of, so a row being named shows a title caret in place
+// It carries the same one caret the canvas does, and no more. Naming a section is
+// what an outline is made of, so a row being named shows a title caret in place
 // — `Aa` opens it on a row that already has a name — and everything else about a
-// thought is `NodeDialog` behind the `✎`. That is the same split as on the canvas
+// section is `NodeDialog` behind the `✎`. That is the same split as on the canvas
 // rather than a second, worse editor for a small screen.
 //
 // Those last two are here because the affordances that carry them on the canvas
@@ -30,9 +30,9 @@ import type { MapNode } from '@/lib/mindmap-doc'
 import { firstSentence, trustOf, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 
 export interface OutlineLabels {
-  /** Opens this thought's section in the document, selected and scrolled to. */
+  /** Opens this section's section in the document, selected and scrolled to. */
   openInDocument?: string
-  /** Opens this thought's section alone, in the document's section focus. */
+  /** Opens this section's section alone, in the document's section focus. */
   focusInDocument?: string
   /** Opens the reading-and-editing dialog on this row. */
   edit: string
@@ -78,7 +78,7 @@ export interface OutlineProps {
   canWrite: boolean
   onSelect: (id: string) => void
   /** Opens the same dialog the pill's open verb opens on the canvas. Present on
-   *  a read-only token too: it is where the whole of a thought can be READ, and
+   *  a read-only token too: it is where the whole of a section can be READ, and
    *  it refuses every write by itself. */
   onEdit: (id: string) => void
   /** The row whose title is being typed right now, or null. */
@@ -157,7 +157,7 @@ export function Outline({
       {rows.map(({ node, depth }) => {
         const fold = foldSummaryOf(node.id)
         // The same one line of substance the canvas draws, for the same reason:
-        // a list you scroll should read as thoughts, not as labels.
+        // a list you scroll should read as sections, not as labels.
         const substance = fold ? fold.text : firstSentence(node.notes, 140)
         const trust: Trust | null =
           trustLens && node.kind !== 'question' ? trustOf(node) : null
@@ -188,7 +188,7 @@ export function Outline({
         >
           {naming === node.id && canWrite ? (
             // Named in place, for the same reason the canvas is: a modal per new
-            // thought is too heavy for what a brainstorm is for.
+            // section is too heavy while an outline is being laid down.
             <div className="min-w-0 flex-1">
               <NodeNameInput
                 value={node.title}

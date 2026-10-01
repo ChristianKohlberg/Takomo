@@ -354,7 +354,7 @@ export interface CreateNode {
   by: string
 }
 
-/** Add a thought. Returns its id, or null when the map is already at its cap. */
+/** Add a section. Returns its id, or null when the map is already at its cap. */
 export function createNode(doc: Y.Doc, opts: CreateNode): string | null {
   const nodes = readNodes(doc)
   if (nodes.length >= MAX_NODES) return null
@@ -736,7 +736,7 @@ export function answerQuestion(doc: Y.Doc, questionId: string, answer: string): 
  * Detach a node from its parent, keeping everything under it.
  *
  * Not a deletion, and deliberately not `reparent`: the node stays exactly where
- * it is drawn, because somebody clicked the LINE rather than dragged the thought,
+ * it is drawn, because somebody clicked the LINE rather than dragged the section,
  * and having it jump to the end of the first ring would lose the place they were
  * reading. It becomes a first-ring node, its children come with it, and nothing
  * is removed.

@@ -1,13 +1,13 @@
 // What a node SAYS, as opposed to where it sits.
 //
-// `mindmap-layout.ts` answers where a thought is drawn and `mindmap-doc.ts`
+// `mindmap-layout.ts` answers where a section is drawn and `mindmap-doc.ts`
 // answers what the document holds; this module answers the third question the
 // canvas keeps asking — what one line of this node is worth showing when there is
 // only room for one line. Four separate readings, all of them pure so they can be
 // tested without a canvas that jsdom cannot lay out anyway:
 //
 //   * the first sentence of somebody's notes, so a map of thirty nodes reads as
-//     thirty thoughts rather than thirty labels;
+//     thirty sections rather than thirty labels;
 //   * what a folded branch is holding, so folding reads as SUMMARISING rather
 //     than hiding;
 //   * how much anybody has actually confirmed about a node, which is the trust
@@ -97,7 +97,7 @@ export function firstSentence(notes: string, max = 160): string {
 // ---- what a fold is holding ------------------------------------------------
 
 export interface FoldSummary {
-  /** Every thought under the folded node, not just the titles that fitted. */
+  /** Every section under the folded node, not just the titles that fitted. */
   count: number
   /** Those titles, in tree order, joined and clamped. */
   text: string
@@ -141,7 +141,7 @@ export type Trust = 'confirmed' | 'machine' | 'unverified'
 export function trustOf(node: { origin: MapNode['origin']; reviewed: boolean }): Trust {
   // `reviewed` decides first, whoever wrote it. The flag means a person has
   // looked at this — and an agent's suggestion somebody has read and kept is
-  // exactly as confirmed as a thought they typed themselves. Reading `origin`
+  // exactly as confirmed as a section they typed themselves. Reading `origin`
   // first would leave a node marked as unchecked *because* a machine wrote it,
   // no matter how many people had since agreed with it, which is the one answer
   // this lens must not give.
@@ -199,7 +199,7 @@ export interface CutTarget {
  * detach.
  *
  * An edge is drawn per CHILD — a node has exactly one parent — so a click
- * resolves to the child and the cut is "this thought stops hanging off that one".
+ * resolves to the child and the cut is "this section stops hanging off that one".
  * A first-ring node's line goes to the map itself rather than to a node, and
  * cutting it would mean nothing; that is the null.
  */
