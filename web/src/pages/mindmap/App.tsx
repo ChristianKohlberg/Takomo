@@ -21,6 +21,7 @@ import { useSpecification } from '../specification/context'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { CommandPalette } from '@/components/mindmap/CommandPalette'
+import { DeleteSpecificationDialog } from '@/components/mindmap/DeleteSpecificationDialog'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { pick } from '@/lib/i18n'
@@ -55,6 +56,9 @@ export function MapView() {
   const selectedProject = project
   const refreshList = refreshMap
   const canWrite = scopes.includes('write')
+  // Deleting the whole specification is an admin act, as the server enforces.
+  const canDelete = scopes.includes('admin')
+  const [deleting, setDeleting] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [paletteStage, setPaletteStage] = useState<'commands' | 'project'>('commands')
   const [paletteQuery, setPaletteQuery] = useState('')
@@ -94,16 +98,17 @@ export function MapView() {
       .catch(handleErr)
   }, [open, t, token, refreshList, handleErr])
 
-  const removeMap = useCallback(() => {
-    if (!open) return
-    if (!window.confirm(t.confirmDeleteMap)) return
-    deleteMindmap(token, open.id)
-      .then(() => refreshList())
-      .then(() => {
-        toast(t.mapDeleted, 'success')
-      })
-      .catch(handleErr)
-  }, [open, t, token, refreshList, toast, handleErr])
+  const openDelete = useCallback(() => setDeleting(true), [])
+  /** Runs after the dialog's two steps and the typed confirmation. */
+  const removeMap = useCallback(
+    async (id: string) => {
+      await deleteMindmap(token, id)
+      setDeleting(false)
+      toast(t.mapDeleted, 'success')
+      await refreshList().catch(handleErr)
+    },
+    [t, token, refreshList, toast, handleErr],
+  )
 
   /**
    * The way to the other rendering of this plan.
@@ -210,7 +215,7 @@ export function MapView() {
               onRenameMap={renameMap}
               focusNode={focusNode}
               onSelection={selectSection}
-              onDeleteMap={removeMap}
+              onDeleteMap={canDelete ? openDelete : undefined}
               labels={{
                 branch: t.branch,
                 readOnly: t.readOnlyBanner,
@@ -308,6 +313,8 @@ export function MapView() {
                 notesPreview: t.notesPreview,
                 missingSection: t.missingSection,
                 editNotes: t.editNotes,
+                editInDocument: t.editInDocument,
+                notesInDocument: t.notesInDocument,
                 notesCount: t.notesCount,
                 kind: t.kind,
                 shape: t.shape,
@@ -454,6 +461,23 @@ export function MapView() {
           </div>
         )}
       </main>
+
+      <DeleteSpecificationDialog
+        target={deleting && open && canDelete ? { id: open.id, title: open.title, project: open.project } : null}
+        onOpenChange={(value) => !value && setDeleting(false)}
+        onConfirm={removeMap}
+        labels={{
+          first: t.deleteSpecFirst,
+          second: t.deleteSpecSecond,
+          warning: t.deleteSpecWarning,
+          irreversible: t.deleteSpecIrreversible,
+          continue: t.deleteSpecContinue,
+          typeToConfirm: t.deleteSpecType,
+          final: t.deleteSpecFinal,
+          busy: t.deleteSpecBusy,
+          cancel: t.cancel,
+        }}
+      />
 
       {paletteOpen && !open && (
         <CommandPalette

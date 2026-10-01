@@ -9,10 +9,10 @@
 //! lease, no ready queue, no assignment, no comments, no attachments. Two rules
 //! follow from that and shape everything here:
 //!
-//! - **Deleting one is ordinary.** An initiative is nurtured; a mindmap is
-//!   scratch. `DELETE` cascades its nodes, and the epics and initiatives its
-//!   branches became are untouched, because those left the map when they
-//!   graduated.
+//! - **Deleting one is guarded.** A mindmap is the project's specification, so
+//!   `DELETE` needs the `admin` scope and the id repeated as `confirm_id`, like a
+//!   reset. It cascades the sections; the epics and initiatives promoted from
+//!   them are untouched, because those are work in their own right.
 //!
 //! - **A node is capped short** (`mindmapdoc::MAX_TITLE`). That is the method, not a
 //!   limitation: a thought needing more than a sentence or two has stopped being a
@@ -276,14 +276,13 @@ impl Store {
                 return Err(ApiError::conflict(
                     "mindmap.project_has_one",
                     format!(
-                        "Project '{project}' already has a mindmap ({}). A project has one brainstorm, the way it has one board.",
+                        "Project '{project}' already has its specification ({}). A project has exactly one.",
                         held.join(", ")
                     ),
                 )
                 .remedy(format!(
-                    "Grow that one instead (POST /v1/mindmaps/{}/nodes), promote the branch that turned out to be its own subject into an initiative or an epic, or throw the map away first (DELETE /v1/mindmaps/{}) — deleting one is ordinary.",
+                    "A project has one specification. Open it (GET /v1/mindmaps/{0}) and add sections to it (POST /v1/mindmaps/{0}/nodes) instead of creating another.",
                     held.first().map(String::as_str).unwrap_or("{id}"),
-                    held.first().map(String::as_str).unwrap_or("{id}")
                 )));
             }
 
@@ -464,8 +463,8 @@ impl Store {
         })
     }
 
-    /// Throw a map away. Ordinary, and the clearest statement of what a mindmap
-    /// is: scratch.
+    /// Delete a map — a project's specification — with all its sections. The
+    /// admin scope and the id confirmation are checked by the route.
     ///
     /// Nodes cascade. What a branch *became* does not: an epic or initiative that
     /// graduated is work in its own right, and it left the map when it graduated.

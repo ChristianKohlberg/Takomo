@@ -70,12 +70,17 @@ pub const PROSE_KEY: &str = "prose";
 /// brainstorm. The long form now has somewhere to go — see [`MAX_NOTES`].
 pub const MAX_TITLE: usize = 280;
 
-/// The escape hatch the title cap needs in order to stay honest.
+/// The cap on a section's prose written as plain text (`notes` on the wire).
 ///
-/// Notes do not render in the outline; you open a node to read them. So the
-/// thing the 280-character rule protects — a branch readable at a glance —
-/// survives, and detail no longer has to be truncated or promoted away.
-pub const MAX_NOTES: usize = 8_000;
+/// `notes` is the section's prose, not a side field, so this cap has to fit what
+/// a section really holds. The document view sets no per-section limit of its
+/// own — the bound there is the whole document's stored size
+/// (`crdt::MAX_OBJECT_BYTES`, 32 MiB) — and live specification sections run past
+/// 8,000 characters routinely. 200,000 characters is several times the longest
+/// section seen in practice while keeping one request, and one wholesale
+/// rewrite, bounded; 500 sections at the cap would still fit under the object
+/// bound in ordinary text.
+pub const MAX_NOTES: usize = 200_000;
 
 /// A brainstorm, not a database.
 pub const MAX_NODES: usize = 500;
@@ -687,8 +692,12 @@ pub fn validate_notes(notes: &str) -> ApiResult<String> {
         return Err(ApiError::validation(
             "validation.mindmap_notes",
             format!(
-                "Those notes are {count} characters and the cap is {MAX_NOTES}. Notes are the long form of one thought, not a document — at this length the branch wants to be an initiative."
+                "Those notes are {count} characters and the cap is {MAX_NOTES}. `notes` is a section's prose as plain text, and one write of it is bounded."
             ),
+        )
+        .remedy(
+            "Split the text across several sections, or write the section in the document view, where it is edited block by block (or propose the change with takomo_plan_propose / POST /v1/mindmaps/{id}/proposals)."
+                .to_string(),
         ));
     }
     Ok(notes.to_string())
@@ -1198,6 +1207,26 @@ pub fn patch_node(doc: &Doc, id: &str, patch: &NodePatch, _actor: &str) -> ApiRe
     }
 
     let entry = node_map(&txn, &nodes_map, id)?;
+    // `notes` replaces the section's prose wholesale with plain paragraphs. That
+    // is lossless only when the prose is plain paragraphs already; on a section
+    // with headings, lists, tables, marks or references it would flatten them
+    // all. Refused before anything is written, so the node is left untouched.
+    if notes.is_some() {
+        if let Some(Out::YXmlFragment(frag)) = entry.get(&txn, PROSE_KEY) {
+            if !super::prose::is_plain(&txn, &frag) {
+                return Err(ApiError::conflict(
+                    "conflict.notes_would_flatten",
+                    format!(
+                        "Section '{id}' holds structured prose (headings, lists, tables, formatting or section references). `notes` writes plain paragraphs and would flatten it, so nothing was changed."
+                    ),
+                )
+                .remedy(
+                    "Change this section's text as a proposal against its blocks (takomo_plan_propose, or POST /v1/mindmaps/{id}/proposals), or edit it in the document view. PATCH `notes` stays available for empty and plain-paragraph sections."
+                        .to_string(),
+                ));
+            }
+        }
+    }
     let now = now_ms();
 
     if let Some(target) = &patch.parent {
@@ -1227,7 +1256,8 @@ pub fn patch_node(doc: &Doc, id: &str, patch: &NodePatch, _actor: &str) -> ApiRe
     }
     if let Some(notes) = notes {
         // `notes` on the wire is the section's prose as plain text. A caller
-        // that sends a finished string replaces the prose with it; somebody
+        // that sends a finished string replaces the prose with it — checked
+        // above to be plain, so nothing but the words is replaced; somebody
         // typing in the document view edits the same fragment through the
         // editor, which is where the merge actually matters.
         let prose = prose_of(&mut txn, &entry);

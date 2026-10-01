@@ -24,6 +24,8 @@ const LABELS: NodeDialogLabels = {
   notes: 'Notes',
   notesHint: 'The long form.',
   notesCount: '{n} of {max} characters',
+  editInDocument: 'Edit in document',
+  notesInDocument: 'Edited in the document view.',
   kind: 'Kind',
   shape: 'Shape',
   color: 'Colour',
@@ -223,4 +225,35 @@ it('reads legacy Markdown safely before opening an explicit notes edit', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Edit notes' }))
   expect((screen.getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement).value).toBe('**Important** <script>alert(1)</script>')
   expect(p.onNotes).not.toHaveBeenCalled()
+})
+
+describe('a section the notes box must not rewrite', () => {
+  it('shows a read-only preview and a way into the document instead of the textarea', () => {
+    const onEditInDocument = vi.fn()
+    const p = mount({
+      notesEditable: false,
+      onEditInDocument,
+      node: node({ notes: 'A table and a heading live here.' }),
+    })
+    expect(screen.queryByRole('textbox', { name: 'Notes' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Edit notes' })).toBeNull()
+    expect(screen.getByTestId('notes-in-document').textContent).toContain('A table and a heading live here.')
+    expect(screen.getByText('Edited in the document view.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit in document' }))
+    expect(onEditInDocument).toHaveBeenCalledWith('mn-1')
+    // Closing never writes notes for a section the box does not own.
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(p.onNotes).not.toHaveBeenCalled()
+  })
+
+  it('previews only the start of a long section', () => {
+    mount({ notesEditable: false, onEditInDocument: vi.fn(), node: node({ notes: 'a'.repeat(5000) + 'TAIL' }) })
+    expect(screen.getByTestId('notes-in-document').textContent).not.toContain('TAIL')
+  })
+
+  it('keeps the plain textarea for a plain short section', () => {
+    mount({ notesEditable: true, onEditInDocument: vi.fn() })
+    expect(screen.getByRole('textbox', { name: 'Notes' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit in document' })).toBeNull()
+  })
 })

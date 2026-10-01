@@ -17,10 +17,13 @@ import {
   createNode,
   createQuestion,
   detach,
+  isPlainProse,
+  notesEditable,
   readNodes,
   readRelationships,
   setNotes,
 } from './mindmap-crdt'
+import { MAX_DIALOG_NOTES } from './mindmap-doc'
 
 const fresh = () => new Y.Doc()
 
@@ -202,4 +205,79 @@ it('preserves rich preview block names and text marks without XML case loss', ()
   code.insert(0, [text]); fragment.insert(0, [code])
   text.insert(0, 'flowchart TD; A-->B', { bold: {} })
   expect(fragmentStructure(fragment)).toEqual([{ tag: 'codeBlock', attributes: { language: 'mermaid' }, children: [{ text: [{ insert: 'flowchart TD; A-->B', attributes: { bold: {} } }] }] }])
+})
+
+/** Give a section what the document view writes: a heading, a table, and a
+ *  paragraph with a bold word — the shapes a plain rewrite would flatten. */
+function enrich(doc: Y.Doc, id: string, shape: 'heading' | 'table' | 'bold' | 'reference' | 'list') {
+  const frag = proseOf(doc, id)!
+  doc.transact(() => {
+    if (shape === 'bold') {
+      const p = new Y.XmlElement('paragraph')
+      p.setAttribute('id', 'blk_bold01')
+      const text = new Y.XmlText()
+      p.insert(0, [text])
+      frag.insert(frag.length, [p])
+      text.insert(0, 'Never partial.', { bold: {} })
+      return
+    }
+    if (shape === 'reference') {
+      const p = new Y.XmlElement('paragraph')
+      const ref = new Y.XmlElement('sectionReference')
+      ref.setAttribute('sectionId', 'mn-other')
+      p.insert(0, [ref])
+      frag.insert(frag.length, [p])
+      return
+    }
+    const el = new Y.XmlElement(shape === 'list' ? 'bulletList' : shape)
+    el.insert(0, [new Y.XmlText('Refunds')])
+    frag.insert(frag.length, [el])
+  })
+}
+
+describe('setNotes never flattens or truncates a section', () => {
+  for (const shape of ['heading', 'table', 'bold', 'reference', 'list'] as const) {
+    it(`refuses to rewrite a section holding a ${shape}`, () => {
+      const doc = fresh()
+      const id = createNode(doc, { parent: null, title: 'Payments', by: 'me' })!
+      expect(setNotes(doc, id, 'The lead.')).toBe(true)
+      enrich(doc, id, shape)
+      const before = fragmentStructure(proseOf(doc, id)!)
+      expect(isPlainProse(proseOf(doc, id))).toBe(false)
+      expect(notesEditable(doc, id)).toBe(false)
+
+      expect(setNotes(doc, id, 'Flattened.')).toBe(false)
+      expect(fragmentStructure(proseOf(doc, id)!)).toEqual(before)
+    })
+  }
+
+  it('rewrites plain paragraphs and an empty section, which loses nothing', () => {
+    const doc = fresh()
+    const id = createNode(doc, { parent: null, title: 'Payments', by: 'me' })!
+    expect(isPlainProse(proseOf(doc, id))).toBe(true)
+    expect(notesEditable(doc, id)).toBe(true)
+    expect(setNotes(doc, id, 'One.\nTwo.')).toBe(true)
+    expect(setNotes(doc, id, 'Three.')).toBe(true)
+    expect(proseTextOf(doc, id)).toBe('Three.')
+  })
+
+  it('hands a long plain section to the document rather than to a textarea', () => {
+    const doc = fresh()
+    const id = createNode(doc, { parent: null, title: 'Payments', by: 'me' })!
+    expect(setNotes(doc, id, 'x'.repeat(MAX_DIALOG_NOTES + 1))).toBe(true)
+    expect(isPlainProse(proseOf(doc, id))).toBe(true)
+    expect(notesEditable(doc, id)).toBe(false)
+  })
+
+  it('answers a question about a structured section by appending, not rewriting', () => {
+    const doc = fresh()
+    const about = createNode(doc, { parent: null, title: 'Payments', by: 'me' })!
+    setNotes(doc, about, 'The lead.')
+    enrich(doc, about, 'table')
+    const q = createQuestion(doc, about, 'Partial refunds?', 'me')!
+    expect(answerQuestion(doc, q, 'Never.')).toBe(about)
+    const blocks = fragmentStructure(proseOf(doc, about)!) as { tag: string }[]
+    expect(blocks.map((b) => b.tag)).toEqual(['paragraph', 'table', 'paragraph'])
+    expect(proseTextOf(doc, about)).toBe('The lead.\nRefunds\nNever.')
+  })
 })

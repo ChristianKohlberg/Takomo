@@ -5551,7 +5551,7 @@ paths:
                   nodes: { type: array, items: { $ref: "#/components/schemas/MindmapNode" } }
                   note: { type: string }
         "403": { description: Token lacks the write scope or the project }
-        "409": { description: "The project already has a mindmap (`mindmap.project_has_one` — a project holds one brainstorm, and the refusal names the map it has), or the project is archived, so brainstorming under it is frozen too (`project.archived`)" }
+        "409": { description: "The project already has its specification (`mindmap.project_has_one` — a project has exactly one, and the refusal names it so the caller can open it), or the project is archived (`project.archived`)" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /mindmaps/{id}:
@@ -5635,15 +5635,28 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [mindmaps]
-      summary: Throw a mindmap away (write scope)
+      summary: Delete a project's specification (admin scope, confirmed)
       description: |
-        An ordinary thing to do, and the clearest statement of what a mindmap is:
-        an initiative is nurtured, a map is scratch. Its nodes go with it.
+        Deletes the mindmap — the project's specification — with every section,
+        its prose, relationships, comments and proposals. It cannot be undone, so
+        it needs the `admin` scope and a body repeating the map's id
+        (`{"confirm_id":"<id>"}`), the same confirmation `POST /v1/mindmaps/{id}/reset`
+        takes. A token with only `write` gets 403.
 
-        What its branches **became** does not: an epic or an initiative that
-        graduated is work in its own right and left the map when it graduated. The
-        reply says how many nodes went, so deleting the wrong map is obvious
-        immediately.
+        What its sections **became** stays: an epic or an initiative promoted from
+        a section is work in its own right. The reply says how many sections went.
+        To empty the specification but keep its identity, history and links, use
+        the reset instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [confirm_id]
+              properties:
+                confirm_id: { type: string, description: Must exactly match the mindmap ID in the path. }
       responses:
         "200":
           description: Gone.
@@ -5654,7 +5667,11 @@ paths:
                 properties:
                   ok: { type: boolean }
                   removed_nodes: { type: integer }
+        "400": { description: 'No body, or no `confirm_id` in it (`validation.field_required`), or an unknown field.' }
+        "403": { description: Admin scope and project access are required. }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: 'The project is archived (`project.archived`).' }
+        "422": { description: 'Confirmation does not match the mindmap ID (`validation.confirm_id`).' }
 
   /mindmaps/{id}/outline:
     parameters:
@@ -5839,7 +5856,7 @@ paths:
               properties:
                 title: { type: string, maxLength: 280, description: 'the field''s real name' }
                 text: { type: string, maxLength: 280, description: 'accepted alias for `title`' }
-                notes: { type: string, maxLength: 8000, description: 'the long form; does not render in the outline' }
+                notes: { type: string, maxLength: 200000, description: 'the section''s prose as plain paragraphs, replacing it wholesale. Only for an empty or plain-paragraph section: on structured prose (headings, lists, tables, formatting, section references) it is refused with 409 `conflict.notes_would_flatten` and nothing changes — propose the change instead.' }
                 parent: { type: [string, "null"] }
                 position: { type: integer, minimum: 0, description: 'the index among the node''s siblings to move it to, 0 first. An index, NOT the gapped 1000/2000 ordering this field used to carry — a value past the end of the ring is refused with `validation.mindmap_position` rather than silently appending.' }
                 kind: { type: string, enum: [thought, question, decision, screen, component] }
@@ -5867,7 +5884,7 @@ paths:
                 properties:
                   node: { $ref: "#/components/schemas/MindmapNode" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { description: "`mindmap.cycle` or `mindmap.too_deep`" }
+        "409": { description: "`mindmap.cycle` or `mindmap.too_deep`, or `conflict.notes_would_flatten` — `notes` sent for a section whose prose is structured; nothing is changed" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [mindmaps]
@@ -11478,11 +11495,11 @@ components:
             a field is not a good enough reason to break somebody's script.
         notes:
           type: string
-          maxLength: 8000
+          maxLength: 200000
           description: |
-            The long form of one thought. Does not appear in the outline; you open
-            a node to read it. Past this length the branch wants to be an
-            initiative, and the refusal (`validation.mindmap_notes`) says so.
+            The section's prose as plain text, one line per block. Does not appear
+            in the outline; you open a section to read it. Over the cap, a write is
+            refused with `validation.mindmap_notes`.
             On reads, inline section references in prose resolve to current target
             titles. Missing targets retain the insertion title with `(Missing section)`;
             empty titles use `Untitled section`. Reading never rewrites shared prose.
@@ -11618,7 +11635,7 @@ components:
         parent: { type: string, description: 'omitted = a first-ring branch off the root' }
         title: { type: string, maxLength: 280, description: 'a sentence or two' }
         text: { type: string, maxLength: 280, description: 'accepted alias for `title`' }
-        notes: { type: string, maxLength: 8000, description: 'the long form, which does not render in the outline' }
+        notes: { type: string, maxLength: 200000, description: 'the new section''s first prose, as plain paragraphs' }
         position:
           type: integer
           description: |
@@ -12834,7 +12851,8 @@ x-error-codes:
   mindmap.already_promoted: "that branch already became an epic or an initiative. Promoting again would make a second one from the same thought, indistinguishable from the first."
   notfound.mindmap_relationship: "no relationship with that id on that map. Relationships come back on GET /v1/mindmaps/{id} as `relationships`; one whose endpoints no longer exist is dropped on read rather than repaired, so a stale id from an older canvas is expected to miss."
   notfound.mindmap_attachment: "no attachment with that id on that node. The node and the attachment are the address together — an attachment id from another node is not reachable here. GET /v1/mindmaps/{id} lists each node's `attachments`."
-  validation.mindmap_notes: "the node's `notes` are over the 8,000-character cap. Notes are the long form of one thought, not a document: at that length the branch wants to be an initiative, so promote it instead of stretching the node."
+  validation.mindmap_notes: "the node's `notes` are over the 200,000-character cap on one plain-text write of a section's prose. Split the text across sections, or write the section in the document view or as a proposal (`takomo_plan_propose`)."
+  conflict.notes_would_flatten: "the section's prose is structured (headings, lists, tables, code, formatting, collapsible blocks or section references) and `notes` writes plain paragraphs, so it would flatten all of it. Nothing was changed. Propose the change against the section's blocks (`takomo_plan_propose`, `POST /v1/mindmaps/{id}/proposals`) or edit it in the document view; `notes` stays available for empty and plain-paragraph sections."
   validation.mindmap_node_kind: "`kind` is not one of thought | question | decision | screen | component. An enum rather than free text, so a map of a system can say what a box IS without a project inventing five spellings of the same word."
   validation.mindmap_node_origin: "`origin` is not `human` or `agent`. It records who put the node there so a trust lens over an agent-grown branch stays buildable; it is stored, never guessed."
   validation.mindmap_edge_label: "the label on the edge to this node's parent is over its length bound. It names one hierarchy edge in passing — the explanation belongs in the node's notes."
@@ -12843,13 +12861,13 @@ x-error-codes:
   validation.mindmap_icons: "`icons` must be an array of strings — short tokens, at most eight. Anything longer than a token belongs in the node's title or notes, which is what a reader actually reads."
   validation.mindmap_attachment: "the attachment is unusable: its `kind` is not one of pdf | code | table | diagram | audio | link, its `name` is empty, or `name`, `gist` or `ref` is over its cap. An attachment is a POINTER, never the bytes — the name is what somebody reads before deciding to follow it."
   mindmap.relationships_full: "the map is at its cap of 1,000 relationships. Past that the canvas is a graph nobody can read — split the map, or delete the cross-links that have stopped earning their place."
-  mindmap.project_has_one: "that project already has a mindmap. A project holds ONE brainstorm, the way it holds one board — the refusal names the existing map, because the caller almost always wanted that one. Grow it, promote the branch that turned out to be its own subject, or delete the map first; deleting one is ordinary. The data model still allows several per project, so lifting this is a decision rather than a migration."
+  mindmap.project_has_one: "that project already has its specification. A project has exactly one — the refusal names it, because the caller almost always wanted that one. Open it and add sections to it (`POST /v1/mindmaps/{id}/nodes`) instead of creating another. The data model still allows several per project, so lifting this is a decision rather than a migration."
   mindmap.attachments_full: "the node is at its cap of 20 attachments. A node carrying more than that has become a folder; split it into two nodes, or promote the branch."
   conflict.collab_busy: "the project's archive state changed while this document was being opened, so the answer to \"may this be written\" could not be settled. Nothing is wrong with the document: open it again. Rare by construction \u2014 it takes three archive or unarchive commits during one open."
   conflict.collab_compaction_size: "compaction would not free anything, or would write a single row over the cap for one object. The document's content is simply that large \u2014 there is nothing to retry, and the flusher stops attempting it until an append succeeds or a minute passes. Compaction runs on the flusher, so from there it is a named contract rather than a silent skip; the one HTTP caller that sees it is a reset (`POST /v1/{documents,mindmaps}/{id}/reset`) whose cleared state \u2014 tombstones included \u2014 would still exceed the cap."
   conflict.collab_reset_stale: "a reset prepares its cleared state from the log outside the write transaction and checks the log's highest seq inside it; this is returned only after three consecutive attempts each found a row appended in that window. Retry the reset — it re-reads the log on every attempt, and nothing was changed."
   conflict.collab_compaction: "compaction was built from a log that has since grown, so replacing it would drop whatever was appended meanwhile. Nothing to do: the next flush compacts from a replica that has seen the new row. Never returned to an HTTP caller \u2014 compaction runs on the flusher, and this code exists so the refusal is a named contract rather than a silent skip."
-  conflict.mindmap_archived: "the map is archived and cannot be written to. Not reachable today — a mindmap has no archive state, because throwing one away is ordinary and there is nothing between 'here' and 'gone' to freeze — but the code is published so adding that gate later stays a schema change and not a new error vocabulary."
+  conflict.mindmap_archived: "the map is archived and cannot be written to. Not reachable today — a mindmap has no archive state of its own (its project's archive freezes it instead) — but the code is published so adding that gate later stays a schema change and not a new error vocabulary."
   mindmap.too_many_peers: "that map already has the maximum number of live editors on its sync socket. Wait for somebody to close the map, then reconnect."
   mindmap.session_missing: "the map's sync socket was opened without a ticket. Mint one with POST /v1/mindmaps/{id}/session and pass it as `?ticket=`. A browser WebSocket cannot set an Authorization header, which is why the credential rides the query string — and why it is a short-lived, single-map ticket rather than your real token."
   mindmap.session_invalid: "that sync ticket is not recognized. It may be mistyped, or minted against a different server."
@@ -12886,7 +12904,7 @@ x-error-codes:
 
   # -- collaborative documents -------------------------------------------------
   notfound.document: "no document with that id. List them with GET /v1/projects/{project}/documents."
-  validation.confirm_id: "`confirm_id` must exactly match the ID in the reset request path. Confirm the selected document before retrying."
+  validation.confirm_id: "`confirm_id` must exactly match the ID in the request path of a reset or a specification delete. Confirm the selected document before retrying."
   validation.document_title: "`title` must be 1-200 characters. It names the document; the prose belongs in the document itself, which is edited over the WebSocket session rather than through any JSON route."
   validation.document_path: "`path` is not a drawable folder. Use `/`-separated segments with no leading or trailing slash, no empty segment and no `.` or `..` — those shapes render as a folder nobody can name or navigate out of. Send \"\" for the top level."
   validation.document_status: "`status` must be `draft`, `review`, `settled` or `archived`. It is a label, not a state machine: nothing enforces an order between them."

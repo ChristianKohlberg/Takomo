@@ -51,11 +51,15 @@ queue, no assignment, no comments, no expiry.
 
 Two rules follow, and they shape everything:
 
-**Deleting one is ordinary.** An initiative earns the right to be nurtured; a
-mindmap earns the right to be thrown away. `takomo mindmap rm` cascades its nodes
-and touches nothing its branches became — those graduated and are work in their
-own right. That is what makes it safe to start a map early, which is the only
-time a brainstorm is worth anything.
+**Deleting one is guarded.** The map is the project's specification, and deleting
+it removes every section in the document, map and tests views at once. So
+`DELETE /v1/mindmaps/{id}` needs the `admin` scope and a body repeating the id —
+`{"confirm_id":"<id>"}`, the same confirmation a reset takes — and a `write`
+token gets 403. The Map's ⌘K offers "Delete the specification…" to admins only,
+behind two steps that ask for the id or title to be typed; the CLI is
+`takomo mindmap rm ID --confirm ID`. What its sections became — epics and
+initiatives promoted from them — is untouched. To empty a specification but keep
+its identity, history and links, reset it instead (`docs/documents.md`).
 
 **A node's title is capped at 280 characters**, and that is the method rather
 than a limitation. A brainstorm whose nodes grow into paragraphs has quietly
@@ -74,6 +78,25 @@ remedy: Shorten it, move the detail into the node's notes, split it into two
 nodes, or promote the branch to an initiative where the long form belongs.
 ```
 
+**`notes` never flattens a section.** On the wire, `notes` is the section's prose
+as plain text, and writing it replaces the prose with plain paragraphs. That is
+only lossless for a section that is plain paragraphs already, so both writers
+check first:
+
+- `PATCH /v1/mindmaps/{id}/nodes/{node}` with `notes` on a section holding
+  headings, lists, tables, code, formatting, collapsible blocks or section
+  references is refused with 409 `conflict.notes_would_flatten`, and nothing in
+  the request is applied. Change such a section with a proposal
+  (`takomo_plan_propose`, `POST /v1/mindmaps/{id}/proposals`) or in the document
+  view. Empty, placeholder and plain sections still take `notes`, which is how a
+  placeholder is seeded.
+- The Map's node dialog offers its plain notes box only for a plain section
+  short enough for a textarea (8,000 characters). Anything else is shown as a
+  short read-only preview with **Edit in document**, which opens the document
+  view at that section. `setNotes` in `web/src/lib/mindmap-crdt.ts` refuses the
+  same sections itself, so no other caller can flatten or truncate one either;
+  answering a question about such a section appends a paragraph instead.
+
 ## One per project
 
 A project holds one brainstorm, the way it holds one board. "Which map?" is not a
@@ -82,11 +105,11 @@ surface stops being used — so starting a second is refused, and the refusal na
 the one that exists, because that is almost always the one you wanted:
 
 ```
-Project 'tp' already has a mindmap (mm-1cslpg34). A project has one brainstorm,
-the way it has one board.
-remedy: Grow that one instead, promote the branch that turned out to be its own
-subject into an initiative or an epic, or throw the map away first — deleting one
-is ordinary.
+Project 'tp' already has its specification (mm-1cslpg34). A project has exactly
+one.
+remedy: A project has one specification. Open it (GET /v1/mindmaps/mm-1cslpg34)
+and add sections to it (POST /v1/mindmaps/mm-1cslpg34/nodes) instead of creating
+another.
 ```
 
 The branch that has become its own subject is what promotion is for, and it was
@@ -174,7 +197,7 @@ thought, indistinguishable from the first.
 | cap | value | why |
 |---|---|---|
 | node title | 280 chars | the method, above |
-| node notes | 8,000 chars | the long form of ONE thought; past it the branch wants to be an initiative |
+| node notes | 200,000 chars | one plain-text write of a section's prose. Sections are routinely longer than a page, so this bounds a request rather than a section; there is no per-section cap in the document view |
 | relationships per map | 1,000 | a canvas, not a graph database |
 | attachments per node | 20 | pointers are cheap, but a node with fifty of them is a folder |
 | nodes per map | 500 | a brainstorm, not a database. Past it: promote branches, or start a second map |

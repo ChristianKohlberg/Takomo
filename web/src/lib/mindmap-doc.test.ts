@@ -373,10 +373,13 @@ describe('writing', () => {
     expect(readNodes(doc)[0]!.title).toHaveLength(MAX_TITLE)
   })
 
-  it('caps notes at 8000 and keeps them off the title', () => {
+  it('refuses notes over the cap rather than truncating them, and keeps them off the title', () => {
     const doc = new Y.Doc()
     const id = createNode(doc, { parent: null, title: 'short', by: 'x' })!
-    setNotes(doc, id, 'n'.repeat(MAX_NOTES + 50))
+    expect(setNotes(doc, id, 'kept')).toBe(true)
+    expect(setNotes(doc, id, 'n'.repeat(MAX_NOTES + 50))).toBe(false)
+    expect(readNodes(doc)[0]!.notes).toBe('kept')
+    expect(setNotes(doc, id, 'n'.repeat(MAX_NOTES))).toBe(true)
     const node = readNodes(doc)[0]!
     expect(node.notes).toHaveLength(MAX_NOTES)
     expect(node.title).toBe('short')

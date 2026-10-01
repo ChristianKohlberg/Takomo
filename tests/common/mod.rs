@@ -380,6 +380,13 @@ impl TestApp {
         self.json(self.authed(Method::DELETE, token, path)).await
     }
 
+    /// A DELETE carrying a JSON body — a confirmed deletion such as a
+    /// specification's `{"confirm_id": …}`.
+    pub async fn delete_with(&self, token: &str, path: &str, body: Value) -> (StatusCode, Value) {
+        self.json(self.authed(Method::DELETE, token, path).json(&body))
+            .await
+    }
+
     // --- the live database ---------------------------------------------------
 
     /// The live server's SQLite file. Tests that must seed states the API

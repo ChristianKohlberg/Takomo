@@ -260,9 +260,13 @@ async fn checkpoint_is_immutable_cas_guarded_and_project_scoped() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(
-        app.delete(&app.admin, &format!("/v1/mindmaps/{map}"))
-            .await
-            .0,
+        app.delete_with(
+            &app.admin,
+            &format!("/v1/mindmaps/{map}"),
+            json!({"confirm_id": map})
+        )
+        .await
+        .0,
         StatusCode::OK
     );
     let db = rusqlite::Connection::open(app.db_path()).unwrap();

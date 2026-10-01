@@ -20,6 +20,7 @@ import {
   MAX_EDGE_LABEL,
   MAX_REL_LABEL,
   MAX_ICONS,
+  MAX_DIALOG_NOTES,
   MAX_NODES,
   MAX_NOTES,
   MAX_RELATIONSHIPS,
@@ -488,6 +489,41 @@ function writeParagraphs(frag: Y.XmlFragment, text: string): void {
 }
 
 /**
+ * Whether a section's prose is nothing but plain paragraphs.
+ *
+ * "Plain" is exactly what `writeParagraphs` produces: top-level `paragraph`
+ * elements with no attribute but their block `id`, holding unmarked text. A
+ * heading, list, table, code block, collapsible block, section reference, hard
+ * break, bold word or link is structure a plain-text write would flatten. The
+ * mirror of `prose::is_plain` in Rust. A section with no prose yet is plain.
+ */
+export function isPlainProse(frag: Y.XmlFragment | null): boolean {
+  if (!frag) return true
+  return frag.toArray().every((block) => {
+    if (!(block instanceof Y.XmlElement) || block.nodeName !== 'paragraph') return false
+    const attrs = block.getAttributes() as Record<string, unknown>
+    if (Object.entries(attrs).some(([key, value]) => key !== 'id' && value != null)) return false
+    return block.toArray().every((child) => {
+      if (!(child instanceof Y.XmlText)) return false
+      return (child.toDelta() as { insert: unknown; attributes?: Record<string, unknown> }[]).every(
+        (op) =>
+          typeof op.insert === 'string' && (!op.attributes || Object.keys(op.attributes).length === 0),
+      )
+    })
+  })
+}
+
+/**
+ * Whether the map's plain notes box may edit this section.
+ *
+ * Only a plain section short enough for a textarea. Anything else is read here
+ * and edited in the document view, block by block.
+ */
+export function notesEditable(doc: Y.Doc, id: string): boolean {
+  return isPlainProse(readProseOf(doc, id)) && proseTextOf(doc, id).length <= MAX_DIALOG_NOTES
+}
+
+/**
  * Replace a node's prose with plain text.
  *
  * `notes` on the wire is a section's prose as plain text, so this is the same
@@ -495,19 +531,53 @@ function writeParagraphs(frag: Y.XmlFragment, text: string): void {
  * rather than a second representation living beside the fragment. A node dialog
  * that wrote to a `notes` Y.Text while an editor wrote to the fragment would put
  * one paragraph in two places, which is the whole failure this phase removes.
+ *
+ * It REFUSES rather than flattens: on a section whose prose is not plain
+ * paragraphs, or with text over `MAX_NOTES`, nothing is written and it returns
+ * false. Truncating or flattening a section is losing somebody's writing, so no
+ * caller may do it through here. Returns true when the prose was written.
  */
-export function setNotes(doc: Y.Doc, id: string, notes: string): void {
+export function setNotes(doc: Y.Doc, id: string, notes: string): boolean {
   const m = node(doc, id)
-  if (!m) return
+  if (!m) return false
+  if (notes.length > MAX_NOTES) return false
+  if (!isPlainProse(readProseOf(doc, id))) return false
   const frag = proseOf(doc, id)
-  if (!frag) return
+  if (!frag) return false
   doc.transact(() => {
-    writeParagraphs(frag, notes.slice(0, MAX_NOTES))
+    writeParagraphs(frag, notes)
     // The legacy field is dropped rather than kept in step: two readings of one
     // paragraph is exactly what prose replaced.
     if (m.get('notes') !== undefined) m.delete('notes')
     touch(m)
   })
+  return true
+}
+
+/**
+ * Add a paragraph to the end of a section's prose, leaving what is there alone.
+ *
+ * What answering a question writes into a section that `setNotes` may not
+ * rewrite: appending loses nothing, whatever the section already holds.
+ */
+function appendParagraph(doc: Y.Doc, id: string, text: string): boolean {
+  const m = node(doc, id)
+  const frag = proseOf(doc, id)
+  if (!m || !frag) return false
+  doc.transact(() => {
+    const el = new Y.XmlElement('paragraph')
+    el.setAttribute('id', blockId())
+    el.insert(0, [new Y.XmlText(text)])
+    frag.insert(frag.length, [el])
+    touch(m)
+  })
+  return true
+}
+
+/** Record an answer in a section: a rewrite where that is lossless, else an
+ *  appended paragraph. */
+function recordAnswer(doc: Y.Doc, id: string, notes: string, answer: string): void {
+  if (!setNotes(doc, id, appendAnswer(notes, answer))) appendParagraph(doc, id, answer)
 }
 
 /**
@@ -640,7 +710,7 @@ export function answerQuestion(doc: Y.Doc, questionId: string, answer: string): 
   if (!target) {
     const m = node(doc, questionId)
     if (!m) return null
-    setNotes(doc, questionId, appendAnswer(question.notes, text))
+    recordAnswer(doc, questionId, question.notes, text)
     doc.transact(() => {
       m.set('kind', 'thought')
       m.set('reviewed', true)
@@ -651,7 +721,7 @@ export function answerQuestion(doc: Y.Doc, questionId: string, answer: string): 
 
   const m = node(doc, target.id)
   if (!m) return null
-  setNotes(doc, target.id, appendAnswer(target.notes, text))
+  recordAnswer(doc, target.id, target.notes, text)
   doc.transact(() => {
     m.set('reviewed', true)
     touch(m)

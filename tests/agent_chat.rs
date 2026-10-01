@@ -591,7 +591,13 @@ async fn archive_freezes_agent_writes_and_map_deletion_removes_conversation() {
             .0,
         StatusCode::OK
     );
-    let (s, v) = app.delete(&app.admin, &format!("/v1/mindmaps/{map}")).await;
+    let (s, v) = app
+        .delete_with(
+            &app.admin,
+            &format!("/v1/mindmaps/{map}"),
+            json!({"confirm_id": map}),
+        )
+        .await;
     assert!(s.is_success(), "{s}: {v}");
     assert_eq!(app.get(&app.human, &path).await.0, StatusCode::NOT_FOUND);
     let conn = rusqlite::Connection::open(app.db_path()).unwrap();

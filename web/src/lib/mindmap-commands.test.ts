@@ -24,6 +24,7 @@ const node = (over: Partial<CommandNode> = {}): CommandNode => ({
 const ctx = (over: Partial<CommandContext> = {}): CommandContext => ({
   canWrite: true,
   canManageMap: true,
+  canDeleteMap: true,
   node: null,
   nodeCount: 4,
   projectCount: 3,
@@ -63,11 +64,20 @@ describe('commandsFor', () => {
     expect(ids).toContain('map.fit')
   })
 
+  it('offers deleting the specification only to a viewer allowed to', () => {
+    // Managing the map (renaming it) is a write; deleting the whole
+    // specification is an admin act with its own confirmation.
+    expect(commandsFor(ctx({ canDeleteMap: false }))).not.toContain('map.delete')
+    expect(commandsFor(ctx({ canDeleteMap: undefined }))).not.toContain('map.delete')
+    expect(commandsFor(ctx({ canDeleteMap: false }))).toContain('map.rename')
+    expect(commandsFor(ctx({ canDeleteMap: true }))).toContain('map.delete')
+  })
+
   it('hides what does not apply rather than offering it disabled', () => {
     // A read-only token can look and navigate. Nothing it would be refused for
     // appears at all.
     const ids = commandsFor(
-      ctx({ canWrite: false, canManageMap: false, node: node({ hasChildren: true }) }),
+      ctx({ canWrite: false, canManageMap: false, canDeleteMap: false, node: node({ hasChildren: true }) }),
     )
     // Switching project is a read, so it survives; everything that would write
     // is absent.
