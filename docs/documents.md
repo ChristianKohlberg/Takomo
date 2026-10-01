@@ -572,8 +572,9 @@ Code that scrolls or measures the document must keep to one coordinate space. In
 units) while `offsetTop`, `offsetHeight`, `clientWidth` and inline `px` styles are the page's own,
 unzoomed pixels. Scroll targets are therefore computed from rect deltas, never from `offsetTop`;
 a height measured with `getBoundingClientRect` and written back as a `min-height` must be divided
-by the zoom first (or measured with `offsetHeight`), and a cached height is only valid at the zoom
-it was measured at. Any `scroll-margin` or offset declared on an element inside the page scales
+by the zoom first, and a cached height is only valid at the zoom it was measured at. The section
+height floors (`section-heights.ts`) do both: `setZoom` runs before every sync, heights are stored
+in page pixels, and any zoom change (Fit width following the pane included) forgets them. Any `scroll-margin` or offset declared on an element inside the page scales
 with it; an offset handed to the column does not.
 
 The trigger stays compact on purpose (fit width shows an icon, not the word): a toolbar that

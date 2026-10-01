@@ -946,6 +946,7 @@ function ConnectedPlan({
   const [sectionHeights] = useState(() => new SectionHeights())
   useEffect(() => () => sectionHeights.dispose(), [sectionHeights])
   useLayoutEffect(() => {
+    sectionHeights.setZoom(zoom.value)
     for (const row of visible) {
       if (effectiveCollapsed.has(row.key)) continue
       const mounted = near === null || near.has(row.key) || row.key === selected || row.key === activeMatch?.sectionId
