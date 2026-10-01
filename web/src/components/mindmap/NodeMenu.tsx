@@ -1,4 +1,4 @@
-// Right-click a thought.
+// Right-click a section.
 //
 // The pill above the selected node carries the three or four verbs somebody
 // reaches for constantly; this carries the occasional ones, and it is the place

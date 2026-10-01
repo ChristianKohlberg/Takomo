@@ -1,8 +1,8 @@
-// Everything hanging off one thought, in one place.
+// Everything hanging off one section, in one place.
 //
 // This is where the attachment chips and the inline add row that used to live
-// inside the expanded card went. The card is the thought; a list of pointers to
-// other things is not the thought, and it was the part of the card that grew
+// inside the expanded card went. The card is the section; a list of pointers to
+// other things is not the section, and it was the part of the card that grew
 // without bound — twenty chips and a four-field form inside a 300×320 box that
 // is already drawn OVER its neighbours.
 //
@@ -32,7 +32,7 @@ import {
 import { cn } from '@/lib/utils'
 
 export interface AttachmentsDialogLabels {
-  /** `{title}` is the thought the attachments hang off. */
+  /** `{title}` is the section the attachments hang off. */
   title: string
   subtitle: string
   empty: string
@@ -63,7 +63,7 @@ export interface AttachmentDraftValue {
 }
 
 export interface AttachmentsDialogProps {
-  /** The thought whose attachments these are, or null while closed. */
+  /** The section whose attachments these are, or null while closed. */
   node: { id: string; title: string; attachments: readonly Attachment[] } | null
   canWrite: boolean
   onOpenChange: (open: boolean) => void

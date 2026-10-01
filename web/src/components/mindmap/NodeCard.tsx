@@ -4,7 +4,7 @@
 // 300×320 reading panel drawn over its neighbours, so every click on the map
 // threw a panel across it whether or not the reader had asked to open anything.
 // Selecting is not opening. Selection now highlights the node, brings up the
-// pill and the `+`, and changes nothing else; a thought is READ in `NodeDialog`,
+// pill and the `+`, and changes nothing else; a section is READ in `NodeDialog`,
 // which already existed, is already the editing surface, and already has a
 // read-only state. One surface for "look at this properly" rather than a canvas
 // panel and a dialog that overlap.
@@ -21,7 +21,7 @@
 // as a caret and nothing else — no notes, no marks, no panel — so the thing you
 // are naming is the thing you are looking at. `NodeNameInput` owns that caret
 // and swallows exactly the keystrokes going into it. Everything else about a
-// thought is the dialog; there is no second way to change any field.
+// section is the dialog; there is no second way to change any field.
 import { firstSentence, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 import type { MapNode, Relationship } from '@/lib/mindmap-doc'
 import { ShieldAlert, ShieldCheck } from 'lucide-react'
@@ -46,7 +46,7 @@ export interface NodeCardLabels {
   /** Tooltips on the marks that say where the substance is. */
   hasNotes: string
   hasRelations: string
-  /** Said on the `⌁` an agent-written thought carries. */
+  /** Said on the `⌁` an agent-written section carries. */
   originAgent: string
   /** The eyebrow on a question node. */
   question: string
@@ -115,7 +115,7 @@ export function NodeCard({
    * The one line of substance a card carries.
    *
    * A folded branch says what is inside it; otherwise the first sentence of the
-   * notes. That is what turns a map of thirty nodes into thirty thoughts rather
+   * notes. That is what turns a map of thirty nodes into thirty sections rather
    * than thirty labels — and the whole of it is one command away, in the dialog.
    */
   const substance = fold ? fold.text : firstSentence(node.notes, 140)
@@ -158,7 +158,7 @@ export function NodeCard({
         className,
       )}
     >
-      {/* A question is not a thought and does not read like one. */}
+      {/* A question is not a plain section and does not read like one. */}
       {eyebrow}
       <div
         className={cn(
@@ -170,7 +170,7 @@ export function NodeCard({
         {node.title}
       </div>
       {/* The marks. The map says WHERE the substance is without drawing any of
-          it — which is what makes opening a thought a separate act rather than
+          it — which is what makes opening a section a separate act rather than
           something a click does to you. Absent rather than empty: with an
           eyebrow and a line of substance above and below it, a blank row is a
           line of card height spent on nothing. */}

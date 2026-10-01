@@ -1,9 +1,10 @@
-//! A mindmap as a shared document.
+//! A project's specification as a shared document.
 //!
-//! The nodes used to be rows. They are now one Yjs document per map, for the
-//! reason a brainstorm exists at all: two people and an agent talk at the same
-//! time, and a store where the last writer wins throws one of them away without
-//! saying so.
+//! A mindmap is the specification: one tree of sections, rendered as the
+//! Document, Map and Promises views over this one Yjs document. The sections
+//! used to be rows. They are one Yjs document per map because several people and
+//! agents edit a specification at the same time, and a store where the last
+//! writer wins throws one of them away without saying so.
 //!
 //! This module is to `/mindmaps` what `docprops.rs` is to `/documents` — pure
 //! functions over a `yrs::Doc`, called from inside `room.read` / `room.mutate`
@@ -65,9 +66,8 @@ pub const RELATIONSHIPS_FIELD: &str = "relationships";
 /// all — see `spec/one-model-two-views.md`.
 pub const PROSE_KEY: &str = "prose";
 
-/// A node title is a sentence or two, and that brevity is the method rather
-/// than a limitation: a branch you cannot read at a glance has stopped being a
-/// brainstorm. The long form now has somewhere to go — see [`MAX_NOTES`].
+/// A section title is a heading: short enough for the outline and the map to
+/// stay readable. The section's text lives in its prose — see [`MAX_NOTES`].
 pub const MAX_TITLE: usize = 280;
 
 /// The cap on a section's prose written as plain text (`notes` on the wire).
@@ -82,7 +82,8 @@ pub const MAX_TITLE: usize = 280;
 /// bound in ordinary text.
 pub const MAX_NOTES: usize = 200_000;
 
-/// A brainstorm, not a database.
+/// The most sections one specification holds. The whole tree is read in one
+/// request, which is what this bound keeps affordable.
 pub const MAX_NODES: usize = 500;
 
 /// Past this nobody can read the shape.
@@ -103,8 +104,9 @@ pub const MAX_ATTACHMENT_NAME: usize = 200;
 pub const MAX_ATTACHMENT_GIST: usize = 500;
 pub const MAX_ATTACHMENT_REF: usize = 2_000;
 
-/// What a node can be. `thought` is the default and the overwhelming majority;
-/// the rest exist because a map of a system wants to say what a box *is*.
+/// What a section can be. `thought` (a plain section — the stored name is kept
+/// for compatibility) is the default and the overwhelming majority; the rest
+/// exist because a specification of a system wants to say what a part *is*.
 pub const NODE_KINDS: [&str; 5] = ["thought", "question", "decision", "screen", "component"];
 
 /// Who put it there. Stored from the start even though nothing renders it yet,
@@ -667,7 +669,7 @@ pub fn validate_title(title: &str) -> ApiResult<String> {
     if trimmed.is_empty() {
         return Err(ApiError::validation(
             "validation.mindmap_node_text",
-            "A node needs some text — an empty thought is not one.",
+            "A section needs a title.",
         ));
     }
     let count = trimmed.chars().count();
@@ -675,11 +677,11 @@ pub fn validate_title(title: &str) -> ApiResult<String> {
         return Err(ApiError::validation(
             "validation.mindmap_node_text",
             format!(
-                "That title is {count} characters and the cap is {MAX_TITLE}. A mindmap node is a sentence or two — that brevity is what makes a branch readable at a glance."
+                "That title is {count} characters and the cap is {MAX_TITLE}. A section title is a heading, so the outline and the map stay readable."
             ),
         )
         .remedy(
-            "Shorten it, move the detail into the node's notes, split it into two nodes, or promote the branch to an initiative (POST /v1/mindmaps/{id}/nodes/{node}/promote) where the long form belongs."
+            "Shorten it and move the detail into the section's text (the node's `notes`, or a proposal via takomo_plan_propose / POST /v1/mindmaps/{id}/proposals), or split it into two sections."
                 .to_string(),
         ));
     }
@@ -889,9 +891,13 @@ pub fn add_nodes(doc: &Doc, adds: &[NodeAdd], actor: &str) -> ApiResult<Vec<(Str
         return Err(ApiError::conflict(
             "mindmap.full",
             format!(
-                "This map holds {} nodes and the cap is {MAX_NODES}. A brainstorm this big has stopped being one — promote its branches into initiatives or epics, or start a second map.",
+                "The specification holds {} sections and its limit is {MAX_NODES}. Nothing was added.",
                 existing.len()
             ),
+        )
+        .remedy(
+            "Merge or remove sections the specification no longer needs, then add again. A project has one specification, so the limit is per project."
+                .to_string(),
         ));
     }
 
@@ -938,7 +944,7 @@ pub fn add_nodes(doc: &Doc, adds: &[NodeAdd], actor: &str) -> ApiResult<Vec<(Str
                     return Err(ApiError::conflict(
                         "mindmap.too_deep",
                         format!(
-                            "That would nest {} levels deep and the cap is {MAX_DEPTH}. Past this nobody can read the shape — promote the branch instead.",
+                            "That would nest {} levels deep and the cap is {MAX_DEPTH}. Past this nobody can read the shape — attach the section higher up in the tree.",
                             parent_depth + 1
                         ),
                     ));
@@ -1544,7 +1550,7 @@ pub fn snapshot(doc: &Doc, mindmap: &str) -> (Vec<Value>, Vec<Value>, Vec<DocNod
 ///
 /// Everything the old model did not have takes its default: `notes` empty,
 /// `origin` human (nobody can say otherwise about a node that predates the
-/// question), `kind` thought. Placement and promotion links carry across
+/// question), `kind` section. Placement and promotion links carry across
 /// unchanged, because both are facts somebody established and neither is
 /// recoverable if dropped.
 #[allow(clippy::type_complexity)]
@@ -1859,7 +1865,10 @@ mod tests {
         let err = validate_title(&"x".repeat(MAX_TITLE + 1)).unwrap_err();
         let remedy = err.body.remedy.clone().unwrap_or_default();
         assert!(remedy.contains("notes"), "remedy was: {remedy}");
-        assert!(remedy.contains("promote"), "the old way out survives too");
+        assert!(
+            remedy.contains("proposal"),
+            "and names proposals for the text"
+        );
     }
 
     #[test]

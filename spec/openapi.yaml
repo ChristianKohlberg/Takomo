@@ -5488,12 +5488,12 @@ paths:
   /mindmaps:
     get:
       tags: [mindmaps]
-      summary: List mindmaps (read scope)
+      summary: List specifications (read scope)
       description: |
-        Brainstorms in a project, newest-touched first. A bounded envelope: `items`
-        plus `total` counted with the same predicate, the `limit` applied, and a
-        prose `note` when the page left something out. Each row carries its node
-        count, which is what tells a reader whether a map is worth opening.
+        Specifications (mindmaps), newest-touched first; a project has one. A
+        bounded envelope: `items` plus `total` counted with the same predicate, the
+        `limit` applied, and a prose `note` when the page left something out. Each
+        row carries its section count.
       parameters:
         - { name: project, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { type: string, enum: [open, parked, distilled] } }
@@ -5515,16 +5515,15 @@ paths:
                   note: { type: string }
     post:
       tags: [mindmaps]
-      summary: Start a mindmap (write scope)
+      summary: Create a project's specification (write scope)
       description: |
         `{"project":"tp","title":"Payments rebuild"}`. The title is the root —
-        a map starts from one thing and everything hangs off it — so there is no
-        separate root node to create.
+        a specification starts from one thing and every section hangs off it — so
+        there is no separate root node to create.
 
-        A project holds ONE mindmap. The question "which map?" is not one anybody
-        wanted to answer, and a rail of half-started maps is how a surface stops
-        being used; a branch that turns out to be its own subject promotes into an
-        initiative or an epic instead. The data model is unchanged — `mindmaps` is
+        A project holds ONE specification (a mindmap), shown as the Document, Map
+        and Promises views. Work that grows out of a section is promoted into an
+        epic or an initiative instead. The data model is unchanged — `mindmaps` is
         still keyed by project and every read still pages — so this is a cap that
         can be lifted, not a shape that has to be migrated.
       requestBody:
@@ -5683,7 +5682,7 @@ paths:
       description: |
         Its own route because this is the shape a *model* reads and writes
         cheapest, and the one a person pastes into a document. It is also what
-        seeds an initiative when a branch graduates.
+        seeds an initiative when a section is promoted.
       responses:
         "200":
           description: The outline.
@@ -5784,17 +5783,16 @@ paths:
       - { name: id, in: path, required: true, schema: { type: string } }
     post:
       tags: [mindmaps]
-      summary: Add thoughts, one or many (write scope)
+      summary: Add sections, one or many (write scope)
       description: |
-        Takes a **batch** — `{"nodes":[{"text":"API"},{"text":"integrations"}]}` —
-        because that is what an agent brainstorming with somebody sends, and the
-        batch lands whole or not at all. A bare `{"text":"…"}` is accepted too,
-        since that is what one keystroke sends and wrapping it in an array is
-        friction on the fastest path in the feature.
+        Takes a **batch** of up to 50 — `{"nodes":[{"text":"API"},{"text":"Integrations"}]}` —
+        because that is what an agent drafting a branch of the outline sends, and
+        the batch lands whole or not at all. A bare `{"text":"…"}` is accepted too,
+        for the single section a person adds on the map.
 
         `parent` omitted hangs the node off the root. `position` omitted appends to
         the end of its ring, which is what typing does; a value is what splitting
-        one thought into two needs.
+        one section into two needs.
       requestBody:
         required: true
         content:
@@ -5907,24 +5905,22 @@ paths:
       - { name: node, in: path, required: true, schema: { type: string } }
     post:
       tags: [mindmaps]
-      summary: Graduate a branch into an epic or an initiative (write scope)
+      summary: Promote a section into an epic or an initiative (write scope)
       description: |
-        `epic` creates an epic ticket titled from the node with its **direct
-        children** as tickets under it — the fastest path from "we talked about it"
-        to work in the queue. A deeper subtree would arrive as a flat pile whose
-        shape nobody could recover, and the map keeps that shape for whoever wants
-        it.
+        `epic` creates an epic ticket titled from the section with its **direct
+        children** as tickets under it. A deeper subtree would arrive as a flat
+        pile whose shape nobody could recover, and the specification keeps that
+        shape for whoever wants it.
 
-        `initiative` creates an initiative titled from the node with the subtree as
-        its first **entry** — an entry carries provenance, and where an idea came
-        from is what a collection is supposed to remember.
+        `initiative` creates an initiative titled from the section with the subtree
+        as its first **entry** — an entry carries provenance, so the initiative
+        records which section it came from.
 
-        **The node stays either way**, and keeps a link to what it became. Promotion
-        is not a move: the map is the record of how the thinking got there, and a
-        branch that vanished the moment it mattered would make the map worthless as
-        the thing you read afterwards.
+        **The section stays either way**, and keeps a back-reference to what it
+        became. Promotion is not a move: the specification still describes the
+        part, and the work points back at it.
 
-        Promoting twice is refused — it would make a second epic from one thought,
+        Promoting twice is refused — it would make a second epic from one section,
         indistinguishable from the first.
       requestBody:
         required: true
@@ -6023,8 +6019,8 @@ paths:
       tags: [mindmaps]
       summary: A short-lived token for dictation (write scope)
       description: |
-        Dictation on `/mindmaps`: you talk, and each finished sentence lands as a
-        thought. This is the whole server side of it.
+        Dictation on the Map view: you talk, and each finished sentence lands as a
+        section. This is the whole server side of it.
 
         The audio never reaches this server — the browser streams it straight to
         the speech provider, which keeps a recording out of the request log and
@@ -6385,7 +6381,7 @@ paths:
         since?" is asking a storage format a question about people. This answers
         that one.
 
-        Sparse by construction: an act somebody would name — a thought written,
+        Sparse by construction: an act somebody would name — a section written,
         renamed, moved, pruned, reviewed, a proposal accepted — never a
         keystroke. Every entry carries the free-form actor string AND the person
         behind the credential (`users.id`) where it was bound to one, because a
@@ -6574,8 +6570,8 @@ paths:
       tags: [mindmaps]
       summary: Remove a cross-link (write scope)
       description: |
-        Only the edge goes. Both nodes stay where they are — a relationship is a
-        remark about two thoughts, not a container for either of them.
+        Only the edge goes. Both sections stay where they are — a relationship is a
+        remark about two sections, not a container for either of them.
       responses:
         "200":
           description: Gone.
@@ -7039,11 +7035,11 @@ paths:
         document, and OpenAPI paths are unique per document regardless of
         `servers`.
 
-        A pan/zoom canvas: drag a node onto another to reparent it, into space to
-        pin it, and grow the map from the keyboard — Enter for the next thought,
-        Tab to go a level deeper. A node with no hand placement is laid out
-        automatically, which is what keeps a map growing at typing speed tidy;
-        "tidy up" hands every pinned node back to the layout.
+        The specification's Map view — a pan/zoom canvas: drag a section onto
+        another to reparent it, into space to pin it, and add sections from the
+        keyboard — Enter for the next one, Tab to go a level deeper. A section with
+        no hand placement is laid out automatically; "tidy up" hands every pinned
+        section back to the layout.
 
         On a phone the same tree renders as an indented list. That is not a
         degraded canvas but a better shape for the screen: a pinch-zoom surface at
@@ -11428,15 +11424,13 @@ components:
     Mindmap:
       type: object
       description: |
-        A tree grown at conversation speed, before any of it is an idea.
+        A project's specification: one tree of sections, shown as the Document,
+        Map and Promises views over one shared document. A project has one. There
+        is no workflow, no claim, no lease and no assignment here — a section
+        becomes work only when it is promoted into an epic or an initiative.
 
-        What separates it from an `Initiative` is not the shape but the stakes: an
-        initiative is nurtured, a mindmap is scratch and deleting one is ordinary.
-        There is no workflow, no claim, no lease and no assignment here — it is a
-        brainstorming method and nothing more.
-
-        `title` is the root: a map starts from one thing and everything hangs off
-        it.
+        `title` is the root: a specification starts from one thing and every
+        section hangs off it.
       properties:
         id: { type: string, description: 'e.g. "mm-9f3ka2xz"' }
         project: { type: string }
@@ -11447,12 +11441,12 @@ components:
           enum: [open, parked, distilled]
           description: |
             A label an owner sets, not a workflow state — the same vocabulary an
-            initiative uses. `distilled` = its branches have graduated.
+            initiative uses. `distilled` = its sections have been promoted into work.
         metadata: { type: object }
         nodes:
           type: integer
           description: |
-            How many thoughts hang off it — a denormalised count, written by
+            How many sections it holds — a denormalised count, written by
             whichever call last read the map's document.
 
             The nodes are no longer rows to count: they live in a Yjs document,
@@ -11470,22 +11464,17 @@ components:
     MindmapNode:
       type: object
       description: |
-        One thought. The `title` is capped at 280 characters — see
-        `validation.mindmap_node_text` — and `notes` is the escape hatch that
-        keeps that cap honest.
-
-        The brevity is the method rather than a limitation: the title is what the
-        outline and the canvas render, and a branch you cannot read at a glance
-        has stopped being a brainstorm. Detail no longer has to be truncated or
-        promoted away — it goes in `notes`, which appear only on a node somebody
-        opened.
+        One section of the specification. The `title` is its heading, capped at
+        280 characters (`validation.mindmap_node_text`) so the outline and the map
+        stay readable. The section's text is its prose, returned as `notes` in
+        plain text, and edited in the document view or through proposals.
       properties:
         id: { type: string, description: 'e.g. "mn-9f3ka2xz"' }
         mindmap: { type: string }
         parent:
           type: [string, "null"]
           description: 'null = a first-ring branch off the root'
-        title: { type: string, maxLength: 280, description: 'The field''s real name. A sentence or two — what the outline and the canvas render.' }
+        title: { type: string, maxLength: 280, description: 'The field''s real name. The section heading — what the outline and the canvas render.' }
         text:
           type: string
           maxLength: 280
@@ -11526,8 +11515,9 @@ components:
           type: string
           enum: [thought, question, decision, screen, component]
           description: |
-            `thought` is the default and the overwhelming majority. The rest exist
-            because a map of a system wants to say what a box *is*.
+            `thought` (a plain section; the stored value keeps its original name)
+            is the default and the overwhelming majority. The rest exist because a
+            specification of a system wants to say what a part *is*.
         origin:
           type: string
           enum: [human, agent]
@@ -11565,8 +11555,8 @@ components:
                 y: { type: number }
         promoted:
           description: |
-            What this branch became, once it graduated — and the whole reason a map
-            keeps earning its place after the brainstorming is over.
+            The epic or initiative this section was promoted into — the back-reference
+            from the specification to the work.
           oneOf:
             - { type: "null" }
             - type: object
@@ -11629,11 +11619,11 @@ components:
     MindmapNodeAdd:
       type: object
       description: |
-        One thought to add. `title` is the field's name and `text` is the name it
+        One section to add. `title` is the field's name and `text` is the name it
         had before `notes` existed; send either, and exactly one is required.
       properties:
         parent: { type: string, description: 'omitted = a first-ring branch off the root' }
-        title: { type: string, maxLength: 280, description: 'a sentence or two' }
+        title: { type: string, maxLength: 280, description: 'the section heading' }
         text: { type: string, maxLength: 280, description: 'accepted alias for `title`' }
         notes: { type: string, maxLength: 200000, description: 'the new section''s first prose, as plain paragraphs' }
         position:
@@ -11641,7 +11631,7 @@ components:
           description: |
             The **index among the new node's siblings** to place it at — 0 puts it
             first in its ring. Omitted appends to the end, which is what typing
-            does; a value is what splitting one thought into two needs.
+            does; a value is what splitting one section into two needs.
         kind: { type: string, enum: [thought, question, decision, screen, component], description: 'defaults to `thought`' }
         edge_label: { type: string, maxLength: 80, description: 'labels the edge to `parent`' }
       anyOf:
@@ -12835,25 +12825,25 @@ x-error-codes:
   user.not_member: "that person is not a member of the project, so work there cannot be addressed to them. Membership says who may be handed work; it is separate from what their token may read or write."
 
   # -- initiatives and their entries ------------------------------------------
-  # -- mindmaps: brainstorming, before any of it is an idea --------------------
+  # -- mindmaps: a project's specification, one tree of sections --------------
   validation.mindmap_title: "a mindmap needs a title within its length bound — it is the root everything else hangs off."
   validation.mindmap_summary: "the summary is over its length limit. The long form belongs in an initiative, which is what a branch promotes into."
   validation.mindmap_status: "the status is not one of open | parked | distilled. A label an owner sets, not a workflow state, so nothing gates the order."
   validation.mindmap_metadata: "`metadata_merge` must be a JSON object (keys set to null are removed)."
-  validation.mindmap_node_text: "the node is empty, or longer than the cap. A node is a sentence or two — that brevity is the method, not a limitation, so the refusal names the way out: shorten it, split it in two, or promote the branch to an initiative where the long form belongs."
+  validation.mindmap_node_text: "the section title is empty, or longer than the 280-character cap. A title is a heading: shorten it and move the detail into the section's text (`notes`, or a proposal via `takomo_plan_propose`), or split it into two sections."
   validation.mindmap_nodes: "the batch is empty, over the per-call cap, or an entry is not a {text, parent?, position?} object."
   validation.mindmap_parent: "`parent` must be a node id, or null to hang the node off the root. Absent leaves it where it is."
   validation.mindmap_at: "`at` needs both `x` and `y`, or null to hand the node back to the layout. Half a coordinate places nothing, so it is refused rather than guessed at."
   validation.mindmap_target: "the promotion target is not `epic` or `initiative`. The message names both and what each is for."
-  mindmap.full: "the map is at its node cap. A brainstorm that big has stopped being one — promote its branches, or start a second map."
-  mindmap.too_deep: "that would nest past the depth cap, where nobody can read the shape anyway. Promote the branch instead."
+  mindmap.full: "the specification has reached its limit of 500 sections, so nothing in the batch was added. Merge or remove sections it no longer needs, then add again."
+  mindmap.too_deep: "that would nest sections past the depth cap of 8, where nobody can read the shape anyway. Attach the section higher up in the tree."
   mindmap.cycle: "that would hang a node off itself or off one of its own children, cutting the branch off the map. The drag that makes this easy to try is exactly why it is refused."
-  mindmap.already_promoted: "that branch already became an epic or an initiative. Promoting again would make a second one from the same thought, indistinguishable from the first."
+  mindmap.already_promoted: "that section was already promoted into an epic or an initiative. Promoting again would make a second one from the same section, indistinguishable from the first."
   notfound.mindmap_relationship: "no relationship with that id on that map. Relationships come back on GET /v1/mindmaps/{id} as `relationships`; one whose endpoints no longer exist is dropped on read rather than repaired, so a stale id from an older canvas is expected to miss."
   notfound.mindmap_attachment: "no attachment with that id on that node. The node and the attachment are the address together — an attachment id from another node is not reachable here. GET /v1/mindmaps/{id} lists each node's `attachments`."
   validation.mindmap_notes: "the node's `notes` are over the 200,000-character cap on one plain-text write of a section's prose. Split the text across sections, or write the section in the document view or as a proposal (`takomo_plan_propose`)."
   conflict.notes_would_flatten: "the section's prose is structured (headings, lists, tables, code, formatting, collapsible blocks or section references) and `notes` writes plain paragraphs, so it would flatten all of it. Nothing was changed. Propose the change against the section's blocks (`takomo_plan_propose`, `POST /v1/mindmaps/{id}/proposals`) or edit it in the document view; `notes` stays available for empty and plain-paragraph sections."
-  validation.mindmap_node_kind: "`kind` is not one of thought | question | decision | screen | component. An enum rather than free text, so a map of a system can say what a box IS without a project inventing five spellings of the same word."
+  validation.mindmap_node_kind: "`kind` is not one of thought | question | decision | screen | component (`thought` is a plain section). An enum rather than free text, so a specification of a system can say what a part IS without a project inventing five spellings of the same word."
   validation.mindmap_node_origin: "`origin` is not `human` or `agent`. It records who put the node there so a trust lens over an agent-grown branch stays buildable; it is stored, never guessed."
   validation.mindmap_edge_label: "the label on the edge to this node's parent is over its length bound. It names one hierarchy edge in passing — the explanation belongs in the node's notes."
   validation.mindmap_rel_label: "the relationship's label is over its length bound. It is drawn along an edge on a canvas, so it has to stay a couple of words."

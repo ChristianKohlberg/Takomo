@@ -45,7 +45,7 @@ export type CommandId = (typeof NODE_COMMANDS)[number] | (typeof MAP_COMMANDS)[n
 export interface CommandNode {
   id: string
   title: string
-  /** A branch that already graduated cannot graduate again. */
+  /** A section that was already promoted cannot be promoted again. */
   promoted: boolean
   /** How many pointers hang off it. The badge draws this; the palette does not
    *  gate on it, because the manager is also how one is REMOVED. */
@@ -82,11 +82,11 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
   const out: CommandId[] = []
   const n = ctx.node
   if (n) {
-    // Opening a thought is a READ — it is where the notes, the attachments and
+    // Opening a section is a READ — it is where the notes, the attachments and
     // the lines to other branches are, now that selecting a node no longer
     // throws a panel over the map — so it survives a read-only token.
     out.push('node.open')
-    // The same thought as a section of the document, either in place among the
+    // The same section as a section of the document, either in place among the
     // others or on its own (section focus). Navigation, so a read-only token
     // has both.
     out.push('node.document', 'node.documentFocus')
@@ -222,7 +222,7 @@ export function isTextEntry(
  * child has its own `+` beside the node, attachments have the badge on it, and
  * removing it is on the right-click menu, so none of those is here. What is left
  * is what somebody reaches for while THINKING rather than while arranging:
- * opening the thought, renaming it, folding the branch they have finished
+ * opening the section, renaming it, folding the branch they have finished
  * reading, and drawing a line to something else.
  *
  * Opening it is FIRST and survives a read-only token, because selecting a node
@@ -251,7 +251,7 @@ export function pillVerbsFor(ctx: CommandContext): CommandId[] {
 export function menuVerbsFor(ctx: CommandContext): CommandId[] {
   const n = ctx.node
   if (!n) return []
-  // First, and unconditional: the way from this thought to its section in the
+  // First, and unconditional: the way from this section to its section in the
   // document, in place or focused. Both are navigation rather than edits, so a
   // read-only token has them too.
   const out: CommandId[] = ['node.document', 'node.documentFocus']

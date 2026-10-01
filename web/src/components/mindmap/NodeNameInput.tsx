@@ -1,4 +1,4 @@
-// The one text caret on the canvas: a thought's TITLE, typed on the thought.
+// The one text caret on the canvas: a section's TITLE, typed on the section.
 //
 // Everything else about a node is a dialog, and that is the rule this component
 // exists to keep narrow. A form on the canvas has to fight the canvas for the
@@ -7,8 +7,8 @@
 // does not: it swallows exactly the keystrokes that are being typed INTO it and
 // hands the canvas back the moment it closes.
 //
-// It earns that place because a modal per new thought is too heavy for the ten
-// minutes a brainstorm is for. A node appears where it will live, showing its
+// It earns that place because a modal per new section is too heavy when an
+// outline is being laid down. A node appears where it will live, showing its
 // title and a caret, and you type the name straight onto the map.
 //
 // Enter commits and KEEPS the node selected, so the next Enter on the canvas
@@ -20,7 +20,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MAX_TITLE } from '@/lib/mindmap-doc'
 import { cn } from '@/lib/utils'
 
-/** What happens after a commit: stay on this thought, or open the next one. */
+/** What happens after a commit: stay on this section, or open the next one. */
 export type NameThen = 'stay' | 'child'
 
 export interface NodeNameInputLabels {

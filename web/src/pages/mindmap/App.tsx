@@ -1,8 +1,8 @@
 import { useWorkspaceNavigate } from '@/hooks/useWorkspace'
 import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
 import { useSpecification } from '../specification/context'
-// /mindmaps — brainstorming, before any of it is an idea, with everyone in the
-// room at once.
+// The specification's Map view: the project's tree of sections as a shared
+// canvas, with everyone in the room at once.
 //
 // Each project has one plan. The shared navigation rail owns project switching;
 // the canvas header shows the plan title, connection, and collaborators.
@@ -130,7 +130,7 @@ export function MapView() {
   )
 
   /**
-   * One thought, as its section of the document: selected and scrolled to, or
+   * One section, as its section of the document: selected and scrolled to, or
    * on its own in section focus. A history entry (not a replace), so the
    * browser's Back returns to the map, which stays mounted and keeps its
    * viewport and selection.
@@ -144,7 +144,7 @@ export function MapView() {
     [open, selectedProject, navigate],
   )
 
-  /** The tests for the selected thought, on the same terms as the plan link. */
+  /** The tests for the selected section, on the same terms as the plan link. */
   const chooseProject = setProject
 
   // The empty-state palette. `Live` owns the shortcut whenever a map is open, so
@@ -446,7 +446,7 @@ export function MapView() {
             </div>
           )
         ) : selectedProject ? (
-          // The project is chosen and has no brainstorm. Offer to start it here
+          // The project is chosen and has no specification. Offer to start it here
           // rather than anywhere else: this is where somebody is looking when
           // they find out there is nothing to open.
           <div className="text-muted-foreground px-6 py-16 text-center">

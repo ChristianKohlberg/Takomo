@@ -1,12 +1,12 @@
 // What closing the title caret means.
 //
-// Naming a thought on the canvas has four endings and only one of them is a
+// Naming a section on the canvas has four endings and only one of them is a
 // rename, so the decision is pulled out here rather than spread through `Live`:
 // jsdom cannot lay out a canvas, and this is the part that has to be right.
 //
 // The load-bearing distinction is FRESH. A node the caret created has never been
 // named, so abandoning it must leave nothing behind — the gesture created a box
-// and a placeholder, not a thought. A node that already had a title is only ever
+// and a placeholder, not a section. A node that already had a title is only ever
 // restored, because nothing was written to the document while it was being typed.
 //
 // Emptying an EXISTING node's title is still a deletion, the way it is in every
@@ -26,7 +26,7 @@ export type NameOutcome =
   | { kind: 'discard' }
   /** Leave the document alone — the title it already has is the right one. */
   | { kind: 'keep' }
-  /** An existing thought was emptied. Ask the deletion questions. */
+  /** An existing section was emptied. Ask the deletion questions. */
   | { kind: 'prune' }
   | { kind: 'rename'; title: string }
 

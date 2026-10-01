@@ -37,7 +37,7 @@ import { type SyncConnection } from '@/hooks/useSyncConnection'
 // itself — and every command that does not apply is absent rather than disabled.
 //
 // The ⌘K listener is registered in the CAPTURE phase. The node card no longer
-// swallows anything — it is text you read now, and editing a thought is
+// swallows anything — it is text you read now, and editing a section is
 // `NodeDialog` — but the pill and the right-click menu still stop every keydown,
 // because the canvas keyboard grows and folds the map and none of that may fire
 // from a button in a toolbar. React attaches its handlers at the root container,
@@ -225,7 +225,7 @@ export interface LiveProps {
    */
   onOpenPlan: (node: string | null) => void
   /**
-   * Open one thought as its section of the document: selected and scrolled to,
+   * Open one section as its section of the document: selected and scrolled to,
    * or — with `focus` — on its own in section focus. Navigation, so it is offered
    * on a read-only token too.
    */
@@ -339,7 +339,7 @@ function ConnectedLive({
   /**
    * The node whose whole self is open, or null.
    *
-   * One dialog for every path that means "look at this thought properly" — the
+   * One dialog for every path that means "look at this section properly" — the
    * pill's open verb, ⌘K, the right-click menu, and the `✎` on a phone row.
    * Selecting a node is deliberately NOT one of them.
    */
@@ -348,8 +348,8 @@ function ConnectedLive({
    * The node whose TITLE is being typed, and what to do if it is abandoned.
    *
    * `fresh` is the whole of the difference between creating and renaming:
-   * Escape on a thought that was never named removes it, because the gesture
-   * made a box rather than a thought. `from` is where the selection goes back to
+   * Escape on a section that was never named removes it, because the gesture
+   * made a box rather than a section. `from` is where the selection goes back to
    * in that case, so the Enter-Enter-Enter loop survives a change of mind.
    */
   const [naming, setNaming] = useState<{
@@ -501,7 +501,7 @@ function ConnectedLive({
         return
       }
       // A child added to a FOLDED parent would be created somewhere nobody can
-      // see — the dialog opens, you name the thought, and the canvas shows
+      // see — the dialog opens, you name the section, and the canvas shows
       // nothing new. Adding to a branch is a reason to open it.
       if (parent) {
         setCollapsed((folded) => {
@@ -513,8 +513,8 @@ function ConnectedLive({
       }
       setSelected(id)
       // Created and named in ONE gesture, on the map: the node appears where it
-      // will live with a caret in its title. A modal per new thought is too heavy
-      // for the ten minutes a brainstorm is for.
+      // will live with a caret in its title. A modal per new section is too heavy
+      // while an outline is being laid down.
       setNaming({ id, fresh: true, previous: '', from: after ?? parent })
     },
     [guard, ydoc, labels.newThought, labels.capNodes, session.display, setSelected, onError],
@@ -524,7 +524,7 @@ function ConnectedLive({
    * Where the sentences of one dictation session land.
    *
    * Fixed when the microphone opens rather than read per sentence, so a session
-   * grows ONE branch under the thought that was selected when you started
+   * grows ONE branch under the section that was selected when you started
    * talking. Following the selection instead would deepen a chain a node per
    * sentence, which is not what a spoken list is.
    */
@@ -588,14 +588,14 @@ function ConnectedLive({
       if (outcome.kind === 'discard') {
         // Nothing was ever created, so nothing is left behind — and the
         // selection goes back where it came from, or Enter would have nothing
-        // to grow the next thought from.
+        // to grow the next section from.
         deleteSubtree(ydoc, id)
         setSelected(session.from)
         setFocusRequest(Date.now())
         return
       }
       // An emptied node is a deletion in every outliner, and typing over a
-      // first-draft thought then clearing it is the commonest way to say
+      // first-draft section then clearing it is the commonest way to say
       // "actually, no" — but it still goes through the same two questions.
       if (outcome.kind === 'prune') {
         setPruning(id)
@@ -726,7 +726,7 @@ function ConnectedLive({
   )
 
   /**
-   * A thought dropped into empty space.
+   * A section dropped into empty space.
    *
    * Created, pinned where it landed, selected and opened straight into its title
    * — four things, because the gesture means one thing: "this occurred to me,
@@ -740,7 +740,7 @@ function ConnectedLive({
         parent: focusRoot,
         after: null,
         // A placeholder rather than nothing: the dialog opens with it selected so
-        // it is typed over, and a thought left unnamed is still a legible box on
+        // it is typed over, and a section left unnamed is still a legible box on
         // the map instead of an empty one.
         title: labels.newThought,
         by: session.display,
@@ -756,7 +756,7 @@ function ConnectedLive({
     [focusRoot, guard, ydoc, labels.newThought, labels.capNodes, session.display, setSelected, onError],
   )
 
-  /** Pose a question about the selected thought, and open its title to type it. */
+  /** Pose a question about the selected section, and open its title to type it. */
   const onAsk = useCallback(
     (about: string | null) => {
       if (!guard()) return
@@ -774,7 +774,7 @@ function ConnectedLive({
   /**
    * Answer a question in a person's own words.
    *
-   * The answer lands on the thought the question was about, that thought is
+   * The answer lands on the section the question was about, that section is
    * marked as looked at, and the question goes — so selection has to move with
    * it, or the page would sit on a node that no longer exists.
    */
@@ -1073,7 +1073,7 @@ function ConnectedLive({
   const onFitted = useCallback(() => setFitRequest(null), [])
   const onFocused = useCallback(() => setFocusRequest(null), [])
   /** The phone's `✎`, and the canvas's open verb. Present on a read-only token:
-   *  it is where the whole of a thought is READ, and it writes nothing itself. */
+   *  it is where the whole of a section is READ, and it writes nothing itself. */
   const onOpenNode = useCallback((id: string) => setViewing(id), [])
   const closeViewing = useCallback(() => {
     setViewing(null)
@@ -1317,7 +1317,7 @@ function ConnectedLive({
           setCutting(null)
           if (!guard()) return
           // Pinned where it is drawn rather than sent to the end of the first
-          // ring: somebody clicked a LINE, and having the thought jump across
+          // ring: somebody clicked a LINE, and having the section jump across
           // the map would lose the place they were reading.
           const node = nodes.find((n) => n.id === id)
           detach(ydoc, id, node?.at ?? null)

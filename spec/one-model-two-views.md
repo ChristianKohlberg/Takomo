@@ -2,13 +2,10 @@
 
 Status: **built** · supersedes the conversion in `spec/mindmap-crdt.md` §"Writing it up", which is deleted
 
-> Mindmap and Document is just a different way of rendering the same
-> information. Both have their place. Mindmap for fast brainstorming and
-> grouping of topics, document view to spec out the details and see better
-> diffs.
-
-A project has **one plan**. The map and the document are two ways of looking at
-it, not two things kept in step.
+A project has **one specification** (in the API, a mindmap). The Map and the
+Document views are two ways of looking at it, not two things kept in step: the
+map for the tree's shape — seeing, adding and arranging sections — and the
+document for writing each section out and reviewing its changes.
 
 Opening a project's specification with write access now provides its empty plan
 automatically; there is no separate creation dialog. Existing plans are reused,
@@ -44,7 +41,7 @@ deleted, not extended.
 - **Depth is heading level**; H1 down the tree, as the map already knows.
 - **Tree order is reading order.** The document is the depth-first walk.
 - Both views write the same CRDT, so they cannot drift, and two people can be in
-  different views of the same thought at once.
+  different views of the same section at once.
 
 There is **one document per project** — the plan. Not one per node: the sections
 are sections of it. A section that outgrows its home can later be split into a

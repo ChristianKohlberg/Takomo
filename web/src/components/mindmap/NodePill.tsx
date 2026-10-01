@@ -1,4 +1,4 @@
-// The verbs for the selected thought, floating just above it.
+// The verbs for the selected section, floating just above it.
 //
 // The idea is borrowed from the Ultraplan prototype and so is its discipline:
 // affordances live in the margin and appear only on selection, so the map itself
@@ -22,7 +22,7 @@ export interface PillVerb {
 export interface NodePillProps {
   verbs: readonly PillVerb[]
   onRun: (id: string) => void
-  /** Named for the thought it acts on, so a screen reader hears which node. */
+  /** Named for the section it acts on, so a screen reader hears which node. */
   ariaLabel: string
   className?: string
 }

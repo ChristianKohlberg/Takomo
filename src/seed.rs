@@ -892,7 +892,7 @@ fn mindmap(store: &Store) -> ApiResult<()> {
         PROJECT,
         &crate::store::MindmapCreate {
             title: "Payments rebuild".to_string(),
-            summary: Some("Where the billing work came from.".to_string()),
+            summary: Some("How payments are taken, retried and reconciled.".to_string()),
             metadata: None,
         },
         SEEDER,
@@ -901,16 +901,16 @@ fn mindmap(store: &Store) -> ApiResult<()> {
     // The seeder is alone with the database, so it edits the map's document
     // directly rather than joining a room nobody else is in.
     //
-    // Each entry is (title, notes, origin) — because a map where every node is a
-    // bare label demonstrates nothing. Notes are what make a node convert into a
-    // document rather than a bullet, and `origin` is what the trust lens reads,
-    // so a seeded map has to carry both or two features look broken.
+    // Each entry is (title, notes, origin) — because a specification where every
+    // section is a bare heading demonstrates nothing. Notes are a section's text
+    // in the document view, and `origin` is what the trust lens reads, so a
+    // seeded specification has to carry both or two features look broken.
     let grow = |parent: Option<&str>, nodes: &[(&str, &str, &str)]| -> ApiResult<Vec<String>> {
         let adds: Vec<crate::store::mindmapdoc::NodeAdd> = nodes
             .iter()
             .map(|(title, notes, origin)| crate::store::mindmapdoc::NodeAdd {
                 parent: parent.map(str::to_string),
-                // An agent-written thought belongs to the person whose agent
+                // An agent-written section belongs to the person whose agent
                 // wrote it; "whose agent" is worth knowing.
                 by_user: Some(if *origin == "agent" {
                     sam.clone()
@@ -927,7 +927,7 @@ fn mindmap(store: &Store) -> ApiResult<()> {
             crate::store::mindmapdoc::add_nodes(doc, &adds, SEEDER)
         })?;
         let ids: Vec<String> = created.into_iter().map(|(id, _)| id).collect();
-        // Every thought was written by somebody at some point, and a plan whose
+        // Every section was written by somebody at some point, and a plan whose
         // history is empty tells you nothing about itself.
         for (id, (_, _, origin)) in ids.iter().zip(nodes.iter()) {
             store.record_trace(&crate::store::trace::Record {
@@ -952,67 +952,62 @@ fn mindmap(store: &Store) -> ApiResult<()> {
         None,
         &[
             (
-                "API",
-                "The surface every integration hangs off. Getting this wrong is the expensive mistake, so it gets decided first.",
+                "Payments API",
+                "The public API merchants call to create, capture and refund payments. Every integration builds on it, so its contract is settled first.",
                 "human",
             ),
             (
-                "integrations",
-                "Whose money moves, and through whom. One provider at a time, in the order they cost us.",
+                "Payment providers",
+                "Which providers move the money and in what order they are connected. One provider at a time, starting with the one that carries most volume.",
                 "human",
             ),
-            ("workflows", "", "human"),
-            ("ideas", "", "human"),
+            ("Payment workflows", "", "human"),
+            ("Later extensions", "", "human"),
         ],
     )?;
 
-    // A branch that converts into a document with two bullets under it, and one
-    // that converts into a document with a child document — both shapes, so the
-    // conversion has something to show.
+    // Subsections under two of the top-level sections, so the document view has
+    // nested numbering to show.
     grow(
         Some(&branches[0]),
         &[
             (
-                "versioning: v1 forever, or dated?",
-                "Dated versions are honest and nobody reads them. v1-forever is a lie that keeps working. Leaning to v1-forever with additive-only changes.",
+                "API versioning",
+                "The API stays on v1 and only changes additively: new fields and endpoints, never a removed or renamed one. Dated versions were considered and rejected.",
                 "human",
             ),
-            ("idempotent retries on capture", "", "human"),
-            ("rate limits per merchant", "", "human"),
+            ("Idempotent capture retries", "", "human"),
+            ("Rate limits per merchant", "", "human"),
         ],
     )?;
     grow(
         Some(&branches[1]),
         &[
             (
-                "Stripe first, then the bank file",
-                "Stripe covers the cases we already have. The bank file is a quarter of the volume and most of the pain, so it goes second on purpose.",
+                "Stripe, then the bank transfer file",
+                "Stripe is connected first because it covers every current payment method. The bank transfer file follows: a quarter of the volume, but most of the reconciliation work.",
                 "human",
             ),
-            ("one webhook per provider?", "", "human"),
+            ("Webhook endpoint per provider", "", "human"),
         ],
     )?;
     grow(
         Some(&branches[3]),
         &[
-            ("let a customer split one invoice themselves", "", "human"),
+            ("Customer-initiated invoice splitting", "", "human"),
             (
-                "dunning that reads like a person wrote it",
-                "Suggested while summarising the support backlog — nobody has checked whether it is worth doing.",
+                "Plain-language payment reminders",
+                "Proposed by an agent from the support backlog; nobody has confirmed it belongs in the specification yet.",
                 "agent",
             ),
         ],
     )?;
 
-    // An open question, hanging off the branch it questions. A brainstorm that
-    // has no unanswered question in it is one nobody was honest in.
+    // An open question attached to the section it is about, so the Map view has
+    // one to show.
     let question = grow(
         None,
-        &[(
-            "Do we charge for the API, or is it table stakes?",
-            "",
-            "human",
-        )],
+        &[("Is API access billed separately or included?", "", "human")],
     )?;
     store.edit_mindmap_document(&map.id, |doc| {
         crate::store::mindmapdoc::patch_node(
@@ -1043,14 +1038,14 @@ fn mindmap(store: &Store) -> ApiResult<()> {
         })?;
     }
 
-    // One branch became work, one became a direction, two are still thoughts —
-    // which is what a real brainstorm looks like halfway through.
+    // One section was promoted into an epic, one into an initiative, and two are
+    // still only specified — the state of a specification partway through.
     promote_seeded(store, &map.id, &branches[0], "epic")?;
     promote_seeded(store, &map.id, &branches[1], "initiative")?;
     Ok(())
 }
 
-/// Graduate one seeded branch, reading the branch out of the map's document.
+/// Promote one seeded section, reading it out of the specification's document.
 fn promote_seeded(store: &Store, map_id: &str, node_id: &str, target: &str) -> ApiResult<()> {
     store.edit_mindmap_document(map_id, |doc| {
         let (_, _, nodes) = crate::store::mindmapdoc::snapshot(doc, map_id);

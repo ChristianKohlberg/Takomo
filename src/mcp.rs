@@ -536,9 +536,9 @@ pub struct QuestionsArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MindmapNewArgs {
-    /// Project id the map belongs to.
+    /// Project id the specification belongs to.
     pub project: String,
-    /// The root: what this brainstorm is about, e.g. "Payments rebuild".
+    /// The root: what this specification is about, e.g. "Payments rebuild".
     pub title: String,
     /// One line on why it exists, if it needs one.
     pub summary: Option<String>,
@@ -546,10 +546,10 @@ pub struct MindmapNewArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MindmapNodeArg {
-    /// The node this hangs off. Omit for a branch straight off the root.
+    /// The section this hangs off. Omit for a top-level section off the root.
     pub parent: Option<String>,
-    /// The thought — a sentence or two, 280 characters at most. Brevity is the
-    /// method: if it needs more, it wants to be an initiative.
+    /// The section title — a heading, 280 characters at most. The section's text
+    /// is written afterwards, as a proposal (takomo_plan_propose).
     pub text: String,
 }
 
@@ -557,8 +557,8 @@ pub struct MindmapNodeArg {
 pub struct MindmapGrowArgs {
     /// Mindmap id, e.g. "mm-9f3ka2xz".
     pub id: String,
-    /// The thoughts to add — up to 50 in one call, which is how a whole branch
-    /// arrives while somebody is still talking. They land together or not at all.
+    /// The sections to add — up to 50 in one call, so a whole branch of the
+    /// outline arrives at once. They land together or not at all.
     pub nodes: Vec<MindmapNodeArg>,
 }
 
@@ -566,7 +566,7 @@ pub struct MindmapGrowArgs {
 pub struct MindmapShowArgs {
     /// Mindmap id.
     pub id: String,
-    /// Narrow to one branch instead of the whole map.
+    /// Narrow to one section's subtree instead of the whole specification.
     pub node: Option<String>,
 }
 
@@ -586,9 +586,9 @@ pub struct MindmapListArgs {
 pub struct MindmapPromoteArgs {
     /// Mindmap id.
     pub id: String,
-    /// The node whose branch graduates.
+    /// The section to promote.
     pub node: String,
-    /// `epic` — an epic with this node's direct children as tickets under it.
+    /// `epic` — an epic with this section's direct children as tickets under it.
     /// `initiative` — an initiative seeded with the whole subtree.
     pub target: String,
 }
@@ -1881,12 +1881,11 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "Start a mindmap: a tree you grow at conversation speed, BEFORE any of it is \
-        an idea or work. Use it when somebody is thinking out loud — a project idea fanning out into \
-        API, integrations, workflows — and the shape is not settled yet. The title is the root; \
-        everything hangs off it. Grow it with takomo_mindmap_grow, then promote the branches worth \
-        keeping. A mindmap is scratch by design and deleting one is ordinary, which is what makes it \
-        safe to start one early."
+        description = "Create a project's specification (a mindmap): one tree of sections, shown \
+        as the Document, Map and Promises views. The title is the root; every section hangs off it. \
+        A project has exactly one specification, so this is refused (`mindmap.project_has_one`) when \
+        it already exists — find it with takomo_mindmap_list and read it with takomo_mindmap_show. \
+        Add sections with takomo_mindmap_grow and write their text with takomo_plan_propose."
     )]
     async fn takomo_mindmap_new(
         &self,
@@ -1897,11 +1896,11 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "Add thoughts to a mindmap — a WHOLE BRANCH in one call, which is the point: \
-        while somebody talks you capture ten nodes at once rather than one per turn. Each node is a \
-        sentence or two (280 chars); if a thought needs more it wants to be an initiative. Give \
-        `parent` to hang a node under another, or leave it out for a branch off the root. The batch \
-        lands whole or not at all, so a reader never sees half a thought."
+        description = "Add sections to a specification — up to 50 in one call, so a whole branch \
+        of the outline lands at once. Each entry is a section title (a heading, at most 280 \
+        characters); write the section's text afterwards with takomo_plan_propose. Give `parent` to \
+        nest a section under another, or leave it out for a top-level section. The batch lands whole \
+        or not at all, so a reader never sees half of it."
     )]
     async fn takomo_mindmap_grow(
         &self,
@@ -1912,9 +1911,9 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "Read a mindmap as indented text — the cheapest shape to reason about and the \
-        one to read before adding to a map you did not build. Pass `node` to read a single branch. \
-        Returns the node ids alongside, so you can hang new thoughts in the right place."
+        description = "Read a specification's outline as indented text — the cheapest shape to \
+        reason about and the one to read before adding to it. Pass `node` to read one section's \
+        subtree. Returns the section ids alongside, so you can add new sections in the right place."
     )]
     async fn takomo_mindmap_show(
         &self,
@@ -1925,7 +1924,8 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "List mindmaps in a project, newest-touched first, with their node counts."
+        description = "List specifications (mindmaps), newest-touched first, with their section \
+        counts. A project has one."
     )]
     async fn takomo_mindmap_list(
         &self,
@@ -1936,12 +1936,10 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "Graduate a branch that turned out to matter. `target: \"epic\"` makes an epic \
-        with this node's direct children as tickets under it — the fastest path from talking to work \
-        in the queue. `target: \"initiative\"` makes an initiative seeded with the whole subtree, for \
-        a direction that needs nurturing before it is work. The node STAYS on the map either way and \
-        keeps a link to what it became, so the map goes on being a picture of how the thinking got \
-        there. Promoting the same branch twice is refused."
+        description = "Create work from a section. `target: \"epic\"` makes an epic with this \
+        section's direct children as tickets under it. `target: \"initiative\"` makes an initiative \
+        seeded with the whole subtree. The section STAYS in the specification either way and keeps a \
+        back-reference to what it became. Promoting the same section twice is refused."
     )]
     async fn takomo_mindmap_promote(
         &self,
@@ -2935,7 +2933,7 @@ impl TakomoMcp {
                 by_user: auth.user.clone(),
                 title: n.text,
                 // An agent's branch is marked as an agent's. Nothing renders it
-                // yet, but a map that cannot say which thoughts a person had is
+                // yet, but a map that cannot say which sections a person wrote is
                 // a map that can never grow a trust view.
                 origin: Some("agent".to_string()),
                 ..Default::default()
@@ -3077,7 +3075,7 @@ impl TakomoMcp {
                 return Err(ApiError::conflict(
                     "mindmap.already_promoted",
                     format!(
-                        "That branch already became {kind} '{existing}'. Promoting it again would make a second one from the same thought, indistinguishable from the first."
+                        "That branch already became {kind} '{existing}'. Promoting it again would make a second one from the same section, indistinguishable from the first."
                     ),
                 ));
             }
@@ -3120,7 +3118,7 @@ impl TakomoMcp {
 
         // The work is committed; without this the link back into the map is not
         // durable, and a promoted branch could come back looking unpromoted and
-        // graduate a second time.
+        // be promoted a second time.
         crate::api::docsync::flush(&self.state, &room, &auth.actor).await;
 
         let (all, _, _) = room.read(|doc| crate::store::mindmapdoc::snapshot(doc, &a.id));

@@ -1,12 +1,14 @@
-//! /v1/mindmaps — brainstorming, before any of it is an idea.
+//! /v1/mindmaps — a project's specification: one tree of sections, rendered as
+//! the Document, Map and Promises views.
 //!
-//! The read that matters is `GET /v1/mindmaps/{id}`: it returns the map **and
-//! every node on it** in one request, because a canvas cannot draw half a tree and
-//! a map is capped at 500 nodes precisely so this is affordable.
+//! The read that matters is `GET /v1/mindmaps/{id}`: it returns the specification
+//! **and every section in it** in one request, because a canvas cannot draw half a
+//! tree and a specification is capped at 500 sections precisely so this is
+//! affordable.
 //!
 //! The write that matters is `POST /v1/mindmaps/{id}/nodes`, which takes a
-//! **batch**. One node is what a person typing sends; ten is what an agent
-//! brainstorming with them sends, and that is the shape the surface is built
+//! **batch**. One section is what a person typing sends; a whole branch is what
+//! an agent drafting an outline sends, and that is the shape the surface is built
 //! around rather than a special case bolted on.
 //!
 //! The nodes are not rows. Each map is one Yjs document (`store::mindmapdoc`),
@@ -122,7 +124,7 @@ pub async fn create(
             "mindmap": map.to_json(),
             "nodes": [],
             "note": format!(
-                "Grow it with POST /v1/mindmaps/{}/nodes {{\"nodes\":[{{\"text\":\"…\"}}]}} — a batch, so an agent can add a whole branch in one call. A node is a sentence or two; when one is worth keeping, promote it to an epic or an initiative.",
+                "Grow it with POST /v1/mindmaps/{}/nodes {{\"nodes\":[{{\"text\":\"…\"}}]}} — a batch, so an agent can add a whole branch of sections in one call. A section's title is a heading; its text is written in the document view or proposed. To turn a section into work, promote it to an epic or an initiative.",
                 map.id
             ),
         })),
@@ -448,7 +450,7 @@ fn node_json(room: &crate::api::docsync::RoomGuard, map_id: &str, node_id: &str)
 /// Who is writing, as far as the credential is concerned.
 ///
 /// **Derived, never accepted from the body.** `origin` exists so a map can
-/// eventually show which thoughts a person actually had, and a field a caller
+/// eventually show which sections a person actually wrote, and a field a caller
 /// can simply claim would say nothing. The `human` scope is what a person's
 /// token carries; everything else is something automated, which is the same
 /// distinction `case_verdicts.actor_kind` already draws.
@@ -558,8 +560,8 @@ pub async fn add_nodes(
             text: section_text(&room, node_id).as_deref(),
         })?;
     }
-    // One event for the batch, not one per node: ten nodes from an agent turn
-    // are one act of brainstorming.
+    // One event for the batch, not one per node: ten sections from an agent
+    // turn are one act.
     state.store.note_mindmap_event(
         &id,
         crate::store::MindmapChange::Grown,
@@ -729,7 +731,7 @@ pub async fn delete_node(
     Ok(Json(json!({ "ok": true, "removed": removed })))
 }
 
-/// POST /v1/mindmaps/{id}/nodes/{node}/promote (write) — graduate a branch.
+/// POST /v1/mindmaps/{id}/nodes/{node}/promote (write) — promote a section into an epic or an initiative.
 ///
 /// The node STAYS and keeps a link to what it became. Promotion is not a move:
 /// the map is the record of how the thinking got there, and a branch that
@@ -761,7 +763,7 @@ pub async fn promote(
     // All of it inside ONE mutation, and in this order: read the branch, make
     // the work, then write the link. A link written first would point at nothing
     // if the work behind it failed, and no link at all would let the same
-    // thought become a second, indistinguishable epic on the next attempt.
+    // section become a second, indistinguishable epic on the next attempt.
     let created = room.mutate(move |doc| {
         let (_, _, nodes) = mindmapdoc::snapshot(doc, &map_id);
         let ordered = mindmapdoc::tree_order(&nodes);
@@ -774,7 +776,7 @@ pub async fn promote(
             return Err(ApiError::conflict(
                 "mindmap.already_promoted",
                 format!(
-                    "That branch already became {kind} '{existing}'. Promoting it again would make a second one from the same thought, indistinguishable from the first."
+                    "That branch already became {kind} '{existing}'. Promoting it again would make a second one from the same section, indistinguishable from the first."
                 ),
             ));
         }

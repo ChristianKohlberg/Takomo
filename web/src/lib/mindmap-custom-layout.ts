@@ -24,8 +24,8 @@ export function layoutForMode<T extends LayoutNode>(
   const placed = radialLayout(nodes)
   if (!customRoot) return placed
   placed.root = customRoot
-  // New thoughts grow beside their saved parent. Only vacant positions are
-  // assigned; adding or deleting a thought never reflows the saved arrangement.
+  // New sections grow beside their saved parent. Only vacant positions are
+  // assigned; adding or deleting a section never reflows the saved arrangement.
   const byId = new Map(placed.nodes.map(p => [p.node.id, p]))
   const occupied: Point[] = [customRoot, ...placed.nodes.filter(p => p.node.at).map(p => p.node.at!)]
   for (const p of [...placed.nodes].sort((a, b) => a.depth - b.depth)) {

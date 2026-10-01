@@ -530,7 +530,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/initiatives/{id}/entries/{entry}/content",
             get(crate::api::initiatives::entry_content),
         )
-        // Mindmaps: brainstorming, before any of it is an idea. The detail read
+        // Mindmaps: a project's specification, one tree of sections. The detail read
         // returns the whole tree because a canvas cannot draw half of one, and the
         // node route takes a BATCH because that is what an agent adding a branch
         // sends.
