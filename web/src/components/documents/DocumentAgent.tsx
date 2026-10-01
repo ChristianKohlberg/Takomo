@@ -7,6 +7,7 @@ import type { PlanNode } from '@/lib/plan-sections'
 import type { DocumentAction } from '@/lib/document-conversation'
 import { DocumentConversation, type DocumentIntent } from './DocumentConversation'
 import { DOCUMENT_CHAT } from './document-conversation-strings'
+import { anchorScroll } from '@/lib/scroll-anchor'
 
 interface Props {
   token: string; project: string; map: string; lang: Locale; nodes: PlanNode[]
@@ -70,7 +71,9 @@ function Agent({ selected, children, onNavigate, ...props }: Props) {
     setMobile('document'); onNavigate?.(section)
     requestAnimationFrame(() => {
       const element = Array.from(workspace.current?.querySelectorAll<HTMLElement>('[data-section]') ?? []).find(node => node.dataset.section === section)
-      element?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      // Instant and anchored (`lib/scroll-anchor.ts`): the section's editor
+      // may still be mounting and growing.
+      if (element) anchorScroll({ target: element, align: 'center' })
       element?.animate?.([{ backgroundColor: 'var(--color-accent)' }, { backgroundColor: 'transparent' }], { duration: 1800 })
     })
   }

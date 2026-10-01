@@ -21,6 +21,7 @@ const probe = vi.hoisted(() => ({
   search: null as null | { scope: { ids: ReadonlySet<string> } | null | undefined; onNavigate: (result: SearchResult) => void },
   location: '',
   back: () => {},
+  navigate: (_search: string) => {},
 }))
 vi.mock('./SectionEditor', async (importOriginal) => {
   const mod = await importOriginal<typeof import('./SectionEditor')>()
@@ -96,6 +97,7 @@ function Harness({ props }: { props: PlanProps }) {
   const navigate = useNavigate()
   probe.location = location.search
   probe.back = () => { void navigate(-1) }
+  probe.navigate = search => { void navigate(`/projects/p/specification${search}`) }
   return <Plan {...props} focusSection={section} onSelection={select} sectionFocus={focus} onSectionFocus={setFocus} />
 }
 
@@ -353,5 +355,138 @@ describe('section focus', () => {
     doc.off('update', updates)
     expect(updates).not.toHaveBeenCalled()
     expect(Y.encodeStateVector(doc)).toEqual(before)
+  })
+})
+
+// jsdom has no layout. This one stacks the sections at the heights the test
+// sets, inside a column 600 px tall, so a section's position depends on every
+// section above it — which is exactly what changes while editors mount. It is
+// installed on the prototypes, so it is in place before the first render.
+function fakeLayout(heights: Map<string, number>) {
+  const state = { scrollTop: 0 }
+  const isColumn = (element: Element) => !!element.firstElementChild?.classList.contains('document-page') ||
+    !!element.querySelector(':scope > .document-page')
+  const sections = () => [...document.querySelectorAll<HTMLElement>('.document-section')]
+  const total = () => sections().reduce((sum, section) => sum + (heights.get(section.dataset.section ?? '') ?? 200), 0)
+  const originalTop = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')!
+  const originalHeight = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')!
+  const originalClient = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight')!
+  Object.defineProperty(Element.prototype, 'scrollTop', {
+    configurable: true,
+    get(this: Element) { return isColumn(this) ? state.scrollTop : originalTop.get!.call(this) },
+    set(this: Element, value: number) {
+      if (isColumn(this)) state.scrollTop = Math.max(0, Math.min(value, Math.max(0, total() - 600)))
+      else originalTop.set!.call(this, value)
+    },
+  })
+  Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, get(this: Element) { return isColumn(this) ? total() : originalHeight.get!.call(this) } })
+  Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get(this: Element) { return isColumn(this) ? 600 : originalClient.get!.call(this) } })
+  restoreLayout = () => {
+    Object.defineProperty(Element.prototype, 'scrollTop', originalTop)
+    Object.defineProperty(Element.prototype, 'scrollHeight', originalHeight)
+    Object.defineProperty(Element.prototype, 'clientHeight', originalClient)
+  }
+  const original = HTMLElement.prototype.getBoundingClientRect
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (isColumn(this)) return new DOMRect(0, 50, 800, 600)
+    if (this.classList.contains('document-section')) {
+      let top = 0
+      for (const section of sections()) {
+        const height = heights.get(section.dataset.section ?? '') ?? 200
+        if (section === this) return new DOMRect(0, 50 + top - state.scrollTop, 800, height)
+        top += height
+      }
+    }
+    return original.call(this)
+  })
+  /** The section's top relative to the column's top. */
+  const offsetOf = (id: string) => document.querySelector<HTMLElement>(`[data-section="${id}"]`)!.getBoundingClientRect().top - 50
+  return { offsetOf }
+}
+let restoreLayout = () => {}
+const pause = (ms: number) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)) })
+
+describe('navigating to a section', () => {
+  afterEach(() => { vi.restoreAllMocks(); restoreLayout(); restoreLayout = () => {} })
+
+  it('jumps at once and keeps the target at the top while the sections above it grow', async () => {
+    const { billing, invoices, terms, reports, props } = setup()
+    const heights = new Map([[billing, 900], [invoices, 1200], [terms, 400], [reports, 3000]])
+    open(props)
+    const row = await screen.findByRole('treeitem', { name: '2 Reports' })
+    const { offsetOf } = fakeLayout(heights)
+    fireEvent.click(within(row).getByRole('button', { name: '2 Reports' }))
+    await waitFor(() => expect(offsetOf(reports)).toBe(0))
+    // Editors above mount and grow after the jump (a table, a diagram).
+    heights.set(invoices, 2600)
+    await pause(50)
+    heights.set(billing, 1500)
+    heights.set(terms, 1100)
+    await waitFor(() => expect(offsetOf(reports)).toBe(0))
+    await pause(100)
+    expect(offsetOf(reports)).toBe(0)
+  })
+
+  it('does the same inside a section focus', async () => {
+    const { billing, invoices, terms, props } = setup()
+    const heights = new Map([[billing, 700], [invoices, 1000], [terms, 2500]])
+    open(props, `?view=document&focus=${billing}`)
+    await waitFor(() => expect(band()).toBeTruthy())
+    const row = await screen.findByRole('treeitem', { name: '1.1.1 Terms' })
+    const { offsetOf } = fakeLayout(heights)
+    fireEvent.click(within(row).getByRole('button', { name: '1.1.1 Terms' }))
+    await waitFor(() => expect(offsetOf(terms)).toBe(0))
+    heights.set(invoices, 2200)
+    heights.set(billing, 1300)
+    await waitFor(() => expect(offsetOf(terms)).toBe(0))
+    expect(params().get('focus')).toBe(billing)
+  })
+
+  it('stops holding the target once the reader scrolls', async () => {
+    const { billing, invoices, terms, reports, props } = setup()
+    const heights = new Map([[billing, 900], [invoices, 1200], [terms, 400], [reports, 3000]])
+    open(props)
+    const row = await screen.findByRole('treeitem', { name: '2 Reports' })
+    const { offsetOf } = fakeLayout(heights)
+    fireEvent.click(within(row).getByRole('button', { name: '2 Reports' }))
+    await waitFor(() => expect(offsetOf(reports)).toBe(0))
+    const column = document.querySelector<HTMLElement>('.document-page')!.parentElement!
+    fireEvent.wheel(column)
+    heights.set(billing, 1400)
+    await pause(80)
+    expect(offsetOf(reports)).toBe(500)
+  })
+
+  it('lands on a section opened cold from a link (section=) and holds it while the page fills in', async () => {
+    const { billing, invoices, terms, reports, props } = setup()
+    const heights = new Map([[billing, 900], [invoices, 1200], [terms, 400], [reports, 3000]])
+    const { offsetOf } = fakeLayout(heights)
+    open(props, `?view=document&section=${reports}`)
+    await screen.findByRole('treeitem', { name: '2 Reports' })
+    await waitFor(() => expect(offsetOf(reports)).toBe(0))
+    heights.set(billing, 2000)
+    heights.set(invoices, 150)
+    await waitFor(() => expect(offsetOf(reports)).toBe(0))
+    await pause(100)
+    expect(offsetOf(reports)).toBe(0)
+  })
+
+  it('lands on a section when section= changes while the document is open (in-app navigation)', async () => {
+    const { billing, invoices, terms, reports, props } = setup()
+    const heights = new Map([[billing, 900], [invoices, 1200], [terms, 400], [reports, 3000]])
+    const { offsetOf } = fakeLayout(heights)
+    open(props)
+    await screen.findByRole('treeitem', { name: '2 Reports' })
+    act(() => probe.navigate(`?view=document&section=${terms}`))
+    await waitFor(() => expect(offsetOf(terms)).toBe(0))
+    heights.set(invoices, 2500)
+    await waitFor(() => expect(offsetOf(terms)).toBe(0))
+    // And back up the document to a section above.
+    act(() => probe.navigate(`?view=document&section=${invoices}`))
+    await waitFor(() => expect(offsetOf(invoices)).toBe(0))
+    heights.set(billing, 1700)
+    await waitFor(() => expect(offsetOf(invoices)).toBe(0))
+    await pause(100)
+    expect(offsetOf(invoices)).toBe(0)
   })
 })
