@@ -2,6 +2,7 @@ import { SectionReferences } from '@/components/documents/SectionReferences'
 import { DocumentReviewProvider } from '@/components/documents/DocumentReview'
 import { highlightSearchPassage } from '@/lib/document-search-highlight'
 import { useDocumentNumbering } from '@/components/documents/DocumentNumberingControls'
+import { DocumentZoomControl, DocumentZoomSteps, useDocumentZoom } from '@/components/documents/DocumentZoom'
 import { EmbeddingStatusProvider } from '@/hooks/useEmbeddingStatus'
 import { DocumentEmbeddingStatus } from '@/components/documents/DocumentEmbeddingStatus'
 import type { ServerSync } from '@/lib/save-status'
@@ -379,6 +380,7 @@ function ConnectedPlan({
   // ---- which sections are mounted -----------------------------------------
 
   const columnRef = useRef<HTMLDivElement | null>(null)
+  const zoom = useDocumentZoom(project, columnRef)
   const elements = useRef(new Map<string, HTMLElement>())
   const observer = useRef<IntersectionObserver | null>(null)
   // `null` means "mount everything", which is what a browser with no
@@ -944,6 +946,7 @@ function ConnectedPlan({
   const [sectionHeights] = useState(() => new SectionHeights())
   useEffect(() => () => sectionHeights.dispose(), [sectionHeights])
   useLayoutEffect(() => {
+    sectionHeights.setZoom(zoom.value)
     for (const row of visible) {
       if (effectiveCollapsed.has(row.key)) continue
       const mounted = near === null || near.has(row.key) || row.key === selected || row.key === activeMatch?.sectionId
@@ -1046,7 +1049,8 @@ function ConnectedPlan({
           />
           <span>{railLabels.outline}</span>
         </button>
-        {token && <DocumentEmbeddingStatus locale={locale} canSync={canWrite} />}</>} >
+        {token && <DocumentEmbeddingStatus locale={locale} canSync={canWrite} />}
+        <DocumentZoomControl zoom={zoom} locale={locale} /></>} >
         {token && <DocumentHybridSearch key={`${session.mindmap}:${token}`} scope={scope} token={token} map={session.mindmap} userId={userId} project={project} locale={locale} canSync={canWrite} onNavigate={result => {
           if (!rows.some(section => section.key === result.node_id)) {
             setNotice({ text: locale === 'de' ? 'Dieser Abschnitt wurde entfernt. Bitte erneut suchen.' : 'This section was removed. Search again.' })
@@ -1060,6 +1064,7 @@ function ConnectedPlan({
           else pendingPassage.current = result
         }} />}
         {agentTools}
+        <DocumentZoomSteps zoom={zoom} locale={locale} />
         <DocumentSectionReferenceButton editor={activeEditor} ydoc={ydoc} locale={locale} canWrite={canWrite} />
         <DocumentCommentButton editor={activeEditor} locale={locale} canWrite={canWrite}
           onComment={draft => { if (selected) setComments({ section: selected, draft }) }} />
@@ -1137,7 +1142,7 @@ function ConnectedPlan({
           // `styles/editor.css`; `mx-auto` centres that measure in whatever
           // column is left once the outline has taken its share.
           <div className="document-appearance document-page mx-auto min-w-0"
-            style={documentAppearanceStyle(appearance)}>
+            style={{ ...documentAppearanceStyle(appearance), ...zoom.style }}>
             {scope && <SectionFocusBreadcrumb
               label={words.focusBreadcrumb}
               root={words.focusRoot}

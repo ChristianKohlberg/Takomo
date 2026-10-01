@@ -21,6 +21,14 @@
 //
 // Sections that were never mounted keep the preview; the scroll anchor
 // (`scroll-anchor.ts`) absorbs the change when their editor arrives.
+//
+// Units: the slots sit inside `.document-page`, which carries the reader's CSS
+// `zoom` (`lib/document-zoom.ts`). `getBoundingClientRect` there is ZOOMED
+// (viewport pixels) while `min-height` and `clientWidth` are the page's own,
+// unzoomed pixels. Heights are therefore stored and applied in page pixels —
+// the measured rect divided by the zoom — and the whole record is dropped when
+// the zoom changes (a preset, a shortcut, or Fit width following the pane),
+// because text rewraps at a different page width.
 
 export interface SectionHeightsOptions {
   graceMs?: number
@@ -40,6 +48,7 @@ export class SectionHeights {
   private readonly resize: ResizeObserver | null
   private readonly graceMs: number
   private readonly now: () => number
+  private zoom = 1
 
   constructor({ graceMs = 1000, now = () => performance.now() }: SectionHeightsOptions = {}) {
     this.graceMs = graceMs
@@ -65,7 +74,19 @@ export class SectionHeights {
     return ref
   }
 
-  /** The last recorded height, if any. */
+  /**
+   * The document zoom in effect. Call before `sync` on every render; a change
+   * forgets every recorded height, so the next `sync` of an unmounted section
+   * clears its floor instead of applying one measured at another zoom.
+   */
+  setZoom(zoom: number): void {
+    const next = zoom > 0 && Number.isFinite(zoom) ? zoom : 1
+    if (Math.abs(next - this.zoom) < 1e-6) return
+    this.zoom = next
+    this.heights.clear()
+  }
+
+  /** The last recorded height in page (unzoomed) pixels, if any. */
   heightOf(id: string): number | undefined {
     return this.heights.get(id)?.height
   }
@@ -102,7 +123,8 @@ export class SectionHeights {
     const content = slot?.firstElementChild
     const since = this.mountedAt.get(id)
     if (!slot || !content || since === undefined) return
-    const height = content.getBoundingClientRect().height
+    // Page pixels: the rect is zoomed, `min-height` is not.
+    const height = content.getBoundingClientRect().height / this.zoom
     const floor = parseFloat(slot.style.minHeight) || 0
     if (floor > 0) {
       const waiting = !expired && this.now() - since < this.graceMs

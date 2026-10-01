@@ -32,7 +32,9 @@ export interface AnchorOptions {
   container?: HTMLElement | null
   /** `start` puts the target's top at the container's top; `center` centres it. */
   align?: AnchorAlign
-  /** Pixels between the container's top edge and the target (`start` only). */
+  /** Pixels between the container's top edge and the target (`start` only).
+   *  Container pixels: the document's reader zoom does not scale it. Positions
+   *  themselves are rect differences, which are zoom-correct as they are. */
   offset?: number
   /** How long the layout must hold still before the anchor lets go. */
   settleMs?: number

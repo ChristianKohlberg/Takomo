@@ -107,4 +107,43 @@ describe('SectionHeights', () => {
     keeper.sync('a', false)
     expect(again.element.style.minHeight).toBe('1200px')
   })
+
+  it('stores and applies heights in page pixels under the reader zoom', () => {
+    // The same layout measured at 100 %: 1200 page pixels.
+    const plain = new SectionHeights({ now: () => time })
+    const at100 = slot(plain, 'a')
+    plain.sync('a', true)
+    expect(plain.heightOf('a')).toBe(1200)
+
+    // At 200 % the rect reports 2400 viewport pixels for the same page height.
+    const zoomed = new SectionHeights({ now: () => time })
+    zoomed.setZoom(2)
+    const at200 = slot(zoomed, 'a')
+    at200.state.height = 2400
+    zoomed.sync('a', true)
+    expect(zoomed.heightOf('a')).toBe(1200)
+    zoomed.sync('a', false)
+    // `min-height` is in the page's own pixels, which the zoom renders as 2400.
+    expect(at200.element.style.minHeight).toBe('1200px')
+    expect(at200.element.style.minHeight).toBe(`${plain.heightOf('a')}px`)
+    expect(at100.element.style.minHeight).toBe('')
+  })
+
+  it('forgets every height when the zoom changes, fit-width recomputation included', () => {
+    const keeper = new SectionHeights({ now: () => time })
+    keeper.setZoom(1.2)
+    const { element, state } = slot(keeper, 'a')
+    state.height = 1440
+    keeper.sync('a', true)
+    keeper.sync('a', false)
+    expect(element.style.minHeight).toBe('1200px')
+    // The same zoom again keeps the record.
+    keeper.setZoom(1.2)
+    expect(keeper.heightOf('a')).toBe(1200)
+    // Fit width following the pane: 120 % becomes 121 %.
+    keeper.setZoom(1.21)
+    expect(keeper.heightOf('a')).toBeUndefined()
+    keeper.sync('a', false)
+    expect(element.style.minHeight).toBe('')
+  })
 })

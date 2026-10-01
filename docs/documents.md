@@ -513,6 +513,74 @@ measures, in Chromium, how far the target's top is from the column top 100 ms to
 an outline click, a cold `section=` load, an in-app `section=` change and an outline click
 inside a section focus.
 
+### Zoom
+
+The Document view zooms like Word or Google Docs. A compact dropdown in the document toolbar
+shows the zoom in effect („100 %") and offers 50, 75, 90, 100, 125, 150 and 200 %, **Seitenbreite /
+Fit width**, Zoom in / Zoom out and **Zurücksetzen / Reset**. In a pane at least 850px wide −/+
+buttons sit beside it; in a narrower pane they fold into **Tools**. The trigger names the zoom
+(„Zoom: 125 %"), the presets are a radio group in a real menu, and a change made with the
+keyboard is announced through a polite status region.
+
+**Fit width** makes the page's 840px measure fill the column. It never goes below 100 % (the page
+is a max-width measure, not a fixed sheet, so a narrower pane already reflows it) or above 200 %,
+and follows the column as the pane, the outline or a conversation changes its width.
+
+Shortcuts: **Ctrl+Alt+Plus / Minus / 0** (⌥⌘ on macOS) zoom in, zoom out and reset. Plain
+Ctrl/⌘ +/−/0 stay the browser's page zoom. With Ctrl+Alt the produced key is read, never the
+physical key: on Windows Ctrl+Alt is AltGr, and AltGr+0 types `}` on a German layout, which must
+reach the text. Where AltGr+Plus produces a character (German: `~`), the keypad's plus and minus
+work. With ⌘+Option the physical key is read, because Option changes the key (⌘⌥= reports `≠`).
+macOS's own accessibility zoom uses the same chords when it is switched on in System Settings,
+and then wins. **Ctrl/⌘+wheel is deliberately not taken**: claiming it over the document would
+mean `preventDefault` on the browser's page zoom (and on trackpad pinch, which arrives as
+Ctrl+wheel), which is exactly what must keep working.
+
+The preference is personal and per browser: `localStorage` `takomo:document-zoom:<project>`
+beside the heading-number preferences, with 100 % stored as no key at all. It is never written
+to the CRDT or the server. The Map has its own canvas zoom, and the History view is a dialog,
+so neither takes this one.
+
+Only the document column zooms: `.document-page` (section headings and editors, tables,
+diagrams, comments and proposals inside sections) carries `zoom: var(--document-zoom)`. The
+toolbar, outline, scroll column, menus and dialogs, which portal to `<body>`, stay at 100 %.
+Print always prints at 100 % (`@media print`).
+
+**Why CSS `zoom`.** `transform: scale` keeps the unscaled layout box, so the page keeps its
+unzoomed width (horizontal overflow at 150 %, a gap at 50 %) and the scroll height is wrong.
+A root font-size or a scale variable only scales what is written in `em`/`rem`: borders, pixel
+paddings, images, Kroki SVGs and table column widths stay put, and every pixel value in the
+editor CSS would need rewriting. `zoom` reflows: the page still fits its column, the scroll
+height is the real one, and since the standardisation (Chromium 128, Firefox 126, Safari)
+`getBoundingClientRect`, `Range.getClientRects`, `caretPositionFromPoint`, `elementFromPoint`
+and IntersectionObserver all report zoomed, viewport-space geometry, which is what ProseMirror's
+`coordsAtPos`/`posAtCoords`, the slash and reference menus (`position: fixed` at `coordsAtPos`)
+and Radix's floating menus already use. Measured in Chromium at 50 %, 100 %, 150 % and fit width:
+clicks land on the clicked character, drag selections end where they are released, the slash
+menu sits 0px from the caret's left and 6px below it at every level, the table menu sits 4–5px
+under its trigger, Kroki images scale with the text, and the long-table fade and button stay
+inside the page. Firefox and Safari were not measured.
+
+One place mixes coordinate spaces: prosemirror-tables' column-resize drag adds a viewport
+`clientX` delta to a width in CSS pixels, so at 200 % a column would grow twice as fast as the
+pointer. While a drag started on a resize handle is in progress, `correctZoomedResizeDrag`
+(`lib/document-zoom.ts`) rewrites each mouse event's `clientX` to `startX + delta / zoom` before
+the plugin reads it; a 40px pointer drag changes the column by 40px at every level.
+
+Code that scrolls or measures the document must keep to one coordinate space. Inside
+`.document-page`, `getBoundingClientRect` is zoomed (viewport pixels, the column's `scrollTop`
+units) while `offsetTop`, `offsetHeight`, `clientWidth` and inline `px` styles are the page's own,
+unzoomed pixels. Scroll targets are therefore computed from rect deltas, never from `offsetTop`;
+a height measured with `getBoundingClientRect` and written back as a `min-height` must be divided
+by the zoom first, and a cached height is only valid at the zoom it was measured at. The section
+height floors (`section-heights.ts`) do both: `setZoom` runs before every sync, heights are stored
+in page pixels, and any zoom change (Fit width following the pane included) forgets them. Any `scroll-margin` or offset declared on an element inside the page scales
+with it; an offset handed to the column does not.
+
+The trigger stays compact on purpose (fit width shows an icon, not the word): a toolbar that
+wraps when a selection enables more controls moves the text under a pointer that is still
+dragging.
+
 ## Formatting, continuous writing, text comments, section references and paste
 
 The compact formatting toolbar follows the current prose selection. Choose Normal text or
