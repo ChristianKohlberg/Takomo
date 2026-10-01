@@ -10,7 +10,11 @@ import { createNode, nodesMap, readPlanTree } from '@/lib/mindmap-crdt'
 import type { Editor } from '@tiptap/react'
 import { COMMENT_FIELD, captureCommentAnchor, createCommentThread, readCommentThreads, type CommentAnchor } from '@/lib/document-comments'
 
-const probe = vi.hoisted(() => ({ editors: new Map<string, Editor>(), panelRenders: 0 }))
+const probe = vi.hoisted(() => ({ editors: new Map<string, Editor>(), panelRenders: 0, anchors: 0 }))
+vi.mock('@/lib/scroll-anchor', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@/lib/scroll-anchor')>()
+  return { ...mod, anchorScroll: (options: Parameters<typeof mod.anchorScroll>[0]) => { probe.anchors++; return mod.anchorScroll(options) } }
+})
 vi.mock('./SectionEditor', async (importOriginal) => {
   const mod = await importOriginal<typeof import('./SectionEditor')>()
   const Original = mod.default
@@ -33,6 +37,7 @@ beforeEach(() => {
   localStorage.clear()
   probe.editors.clear()
   probe.panelRenders = 0
+  probe.anchors = 0
   Element.prototype.scrollIntoView = vi.fn()
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList
   Range.prototype.getBoundingClientRect = () => new DOMRect()
@@ -186,20 +191,22 @@ describe('document workflow integration', () => {
     }
     render(<Connected />)
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)) })
-    const scroll = vi.mocked(Element.prototype.scrollIntoView)
-    scroll.mockClear()
+    // Navigation scrolls through the anchor (`lib/scroll-anchor.ts`), never by scrollIntoView.
+    const scroll = { calls: () => probe.anchors + vi.mocked(Element.prototype.scrollIntoView).mock.calls.length }
+    probe.anchors = 0
+    vi.mocked(Element.prototype.scrollIntoView).mockClear()
     fireEvent.pointerDown(screen.getByLabelText('Section 1.1 prose'))
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)) })
-    expect(scroll).not.toHaveBeenCalled()
+    expect(scroll.calls()).toBe(0)
     expect(screen.getByRole('treeitem', { name: '1.1 Invoices' }).getAttribute('aria-selected')).toBe('true')
     const billing = screen.getByRole('treeitem', { name: '1 Billing' })
     act(() => billing.focus())
     fireEvent.keyDown(billing, { key: 'End' })
     expect(document.activeElement).toBe(screen.getByRole('treeitem', { name: '2 Reports' }))
-    expect(scroll).not.toHaveBeenCalled()
+    expect(scroll.calls()).toBe(0)
     expect(screen.getByRole('treeitem', { name: '1.1 Invoices' }).getAttribute('aria-selected')).toBe('true')
     fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
-    await waitFor(() => expect(scroll).toHaveBeenCalled())
+    await waitFor(() => expect(probe.anchors).toBeGreaterThan(0))
     expect(screen.getByRole('treeitem', { name: '2 Reports' }).getAttribute('aria-selected')).toBe('true')
   })
 

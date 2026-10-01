@@ -26,6 +26,8 @@ import { SectionFocusBand, SectionFocusBreadcrumb } from '@/components/documents
 import { outsideFocus, sectionFocusScope } from '@/lib/section-focus'
 import { readCommentThreads, COMMENT_FIELD } from '@/lib/document-comments'
 import { isTextEntry } from '@/lib/mindmap-commands'
+import { anchorScroll, cancelScrollAnchor, revealEditorPosition } from '@/lib/scroll-anchor'
+import { SectionHeights } from '@/lib/section-heights'
 import { pick } from '@/lib/i18n'
 import { STR } from './strings'
 // The plan, written out: the map's tree read as reading order.
@@ -47,8 +49,9 @@ import { STR } from './strings'
 //
 // **Editors are mounted only near the viewport.** The cap is 500 sections and
 // 500 ProseMirror instances is not a thing to do to a browser. An offscreen
-// section shows its prose as plain text, which is also what holds its height, so
-// scrolling does not jump as editors mount behind you.
+// section shows its prose as plain text, held at the height it last had with an
+// editor (`lib/section-heights.ts`), and going to a section anchors it while the
+// editors around it mount (`lib/scroll-anchor.ts`).
 //
 // **Proposals belong to a SECTION.** They live in the same document, in the
 // top-level `proposals` map, each carrying the node it is about — so an agent's
@@ -66,7 +69,7 @@ import { insertPlanSection } from '@/lib/plan-insert'
 import type { Locale } from '@/lib/i18n'
 import { ChevronDownIcon, ChevronRight, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as Y from 'yjs'
 
 import type { Editor } from '@tiptap/react'
@@ -448,6 +451,28 @@ function ConnectedPlan({
 
   // ---- fold, selection, and getting to a section ---------------------------
 
+  /**
+   * Put a section's top at the top of the column — at once, and kept there
+   * while the editors around it mount and grow (`lib/scroll-anchor.ts`). The
+   * focused section is the exception: it opens the column, so the column goes
+   * to its very top and the breadcrumb above the section stays in view.
+   * Nothing above that point can move, so there is nothing to anchor.
+   */
+  const revealSection = useCallback((key: string) => {
+    const column = columnRef.current
+    if (!column) return
+    if (scopeRef.current?.root.key === key) {
+      cancelScrollAnchor(column)
+      column.scrollTop = 0
+      return
+    }
+    anchorScroll({ container: column, target: () => elements.current.get(key) })
+  }, [])
+  /** A place inside a mounted section (a search hit): centred, then anchored. */
+  const revealInColumn = useCallback((element: HTMLElement | null | undefined) => {
+    if (element) anchorScroll({ container: columnRef.current, target: element, align: 'center' })
+  }, [])
+
   useEffect(() => {
     try {
       localStorage.setItem(foldKey(session.mindmap), JSON.stringify([...collapsed]))
@@ -476,9 +501,9 @@ function ConnectedPlan({
         return next
       })
       setSelected(key)
-      requestAnimationFrame(() => elements.current.get(key)?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+      requestAnimationFrame(() => revealSection(key))
     },
-    [sections, setSelected],
+    [sections, setSelected, revealSection],
   )
 
   /** Where section focus was entered from: keyboard focus returns there on exit. */
@@ -589,9 +614,7 @@ function ConnectedPlan({
     const element = elements.current.get(reveal.key)
     if (!element) return
     pendingReveal.current = null
-    // The focused section opens the column, so its top keeps the breadcrumb in view.
-    if (scopeRef.current?.root.key === reveal.key && columnRef.current) columnRef.current.scrollTop = 0
-    else element.scrollIntoView?.({ block: 'start' })
+    revealSection(reveal.key)
     if (!reveal.focus) return
     const heading = element.querySelector<HTMLElement>('.document-heading')
     if (!heading) return
@@ -705,7 +728,8 @@ function ConnectedPlan({
     const range = await locatedPassageRange(source, result).catch(() => null)
     if (editor.isDestroyed || request !== passageRequest.current || selectedRef.current !== result.node_id) return
     if (range && editor.state.doc.eq(source)) {
-      editor.chain().setTextSelection(range).focus().scrollIntoView().run()
+      editor.chain().setTextSelection(range).focus(undefined, { scrollIntoView: false }).run()
+      revealEditorPosition(editor, range.from)
       highlightSearchPassage(editor.view, range)
       const notice = { text: locale === 'de' ? 'Textstelle hervorgehoben.' : 'Passage highlighted.' }
       setNotice(notice)
@@ -738,7 +762,7 @@ function ConnectedPlan({
     if (!thread || !commentsEditor || thread.sectionId !== commentsSection) return
     pendingComment.current = null
     const range = resolveCommentAnchor(commentsEditor, thread.anchor)
-    if (range) { commentsEditor.commands.setTextSelection(range); commentsEditor.commands.focus(); commentsEditor.commands.scrollIntoView() }
+    if (range) { commentsEditor.commands.setTextSelection(range); commentsEditor.commands.focus(undefined, { scrollIntoView: false }); revealEditorPosition(commentsEditor, range.from) }
     else setNotice({ text: locale === 'de' ? 'Text geändert oder entfernt · Zitat im Kommentar erhalten' : 'Text changed or removed · quote retained in the comment' })
   }, [commentsEditor, commentsSection, comments, locale])
   const syncTextTools = useCallback(() => {
@@ -915,6 +939,18 @@ function ConnectedPlan({
     setFragments(next)
   }, [visible, near, canWrite, ydoc, selected, activeMatch?.sectionId])
 
+  // Unmounted sections keep their last mounted height (`lib/section-heights.ts`).
+  // Synced before paint, so an editor leaving never shows a frame of shrinkage.
+  const [sectionHeights] = useState(() => new SectionHeights())
+  useEffect(() => () => sectionHeights.dispose(), [sectionHeights])
+  useLayoutEffect(() => {
+    for (const row of visible) {
+      if (effectiveCollapsed.has(row.key)) continue
+      const mounted = near === null || near.has(row.key) || row.key === selected || row.key === activeMatch?.sectionId
+      sectionHeights.sync(row.key, mounted && fragments.has(row.key))
+    }
+  })
+
   useEffect(() => {
     if (!activeSearchSection) return
     setSelected(activeSearchSection)
@@ -932,10 +968,10 @@ function ConnectedPlan({
     const frame = requestAnimationFrame(() => {
       const section = elements.current.get(activeSearchSection)
       const match = activeSearchKind === 'prose' ? section?.querySelector('[data-document-search-active="true"]') : section?.querySelector('.document-heading')
-      ;(match ?? section)?.scrollIntoView({ block: 'center' })
+      revealInColumn((match ?? section) as HTMLElement | null | undefined)
     })
     return () => cancelAnimationFrame(frame)
-  }, [activeSearchSection, activeSearchKind, activeSearchKey, activeSearchFragment])
+  }, [activeSearchSection, activeSearchKind, activeSearchKey, activeSearchFragment, revealInColumn])
   const moveSection = (id: string, target: string, placement: SectionPlacement) => {
     if (!canWrite || !history) return { ok: false as const, error: 'changed' as const }
     const result = history.move(id, target, placement)
@@ -1184,13 +1220,17 @@ function ConnectedPlan({
                   sectionRef={refFor(row.key)}
                   labels={focusSectionLabels}
                 >
+                  {/* The slot holds the section's last mounted height while it
+                      shows the preview (`lib/section-heights.ts`). */}
+                  <div ref={sectionHeights.slotRef(row.key)} data-prose-slot="">
+                  <div>
                   {fragment ? (
                     <SectionEditor
                       locale={locale}
                       history={history ?? undefined}
                       ydoc={ydoc}
                       sectionId={row.key}
-                      onFollowReference={id => { goTo(id); if (selected === id) elements.current.get(id)?.scrollIntoView({ block: 'start', behavior: 'smooth' }) }}
+                      onFollowReference={goTo}
                       onOpenComments={() => { setSelected(row.key); setComments({ section: row.key, draft: null }) }}
                       fragment={fragment}
                       provider={provider}
@@ -1223,6 +1263,8 @@ function ConnectedPlan({
                       {preview || labels.proseEmpty}
                     </p>
                   )}
+                  </div>
+                  </div>
                   <SectionReferences ydoc={ydoc} sectionId={row.key} title={row.title} locale={locale} canWrite={canWrite}
                     onChange={change => { if (!canWrite) return; if (history) history.record(change); else change(); onEdited(row.key) }} />
                   <div className="section-discussion">{conversationFor?.(row.key)}</div>

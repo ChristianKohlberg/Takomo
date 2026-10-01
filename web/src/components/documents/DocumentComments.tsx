@@ -5,6 +5,7 @@ import type * as Y from 'yjs'
 import { Button } from '@/components/ui/button'
 import type { Locale } from '@/lib/i18n'
 import { COMMENT_FIELD, MAX_COMMENT_LENGTH, createCommentThread, readCommentThreads, replyToComment, resolveCommentAnchor, resolveCommentThread, type CommentAnchor, type CommentThread } from '@/lib/document-comments'
+import { revealEditorPosition } from '@/lib/scroll-anchor'
 
 export interface DocumentCommentsProps {
   ydoc: Y.Doc; sectionId?: string; editor: Editor | null; actor: string; canWrite: boolean; locale: Locale
@@ -57,7 +58,7 @@ export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, loc
             <span>{thread.resolved ? (de ? 'Erledigt' : 'Resolved') : (de ? 'Offen' : 'Open')}</span>
             {editor && !range && <span>{de ? 'Text geändert oder entfernt · Zitat erhalten' : 'Text changed or removed · quote retained'}</span>}
             {global && sectionTitle?.(thread.sectionId) !== null && <button className="underline" onClick={() => onShowThread?.(thread)}>{de ? 'Zum Text' : 'Go to text'}</button>}
-            {range && <button className="underline" onClick={() => { editor?.commands.setTextSelection(range); editor?.commands.focus(); editor?.commands.scrollIntoView() }}>{de ? 'Text anzeigen' : 'Show text'}</button>}
+            {range && <button className="underline" onClick={() => { if (!editor) return; editor.commands.setTextSelection(range); editor.commands.focus(undefined, { scrollIntoView: false }); revealEditorPosition(editor, range.from) }}>{de ? 'Text anzeigen' : 'Show text'}</button>}
           </div>
           {thread.messages.map(m => <div key={m.id} className="mt-2 text-sm"><span className="font-medium">{m.author}</span><p className="whitespace-pre-wrap break-words">{m.text}</p></div>)}
           {canWrite && <>

@@ -403,7 +403,9 @@ section links, comments, history, and proposals reveal their targets.
 Section actions sit behind the ellipsis beside each heading. The menu contains the accessible
 colored trust indicator and review/history actions; pending proposals remain visible. The copy
 link icon sits directly beside the heading, visible on hover or keyboard focus and always on
-touch screens. Clicking prose sets the current section without navigating or scrolling.
+touch screens. Clicking prose sets the current section without navigating or scrolling. Going
+to a section jumps without animation and holds it in place while the page settles (see
+[Getting to a section](#getting-to-a-section)).
 
 The outline is a resizable sidebar when the document pane is at least 850px wide, and a drawer
 in a narrower pane. Its toolbar toggle remembers whether it is open. Icon controls fold and
@@ -469,6 +471,47 @@ follows the new section.
 
 Section focus is personal view state only: nothing is written to the shared document or the
 server, and collaborators and agents are unaffected.
+
+### Getting to a section
+
+Every way of going to a section — an outline entry, a section reference, a `section=` link
+opened cold or reached in-app (the map, Back/Forward), entering or leaving section focus — puts
+the section's top at the top of the document column **at once**, without a scroll animation
+(so there is nothing for `prefers-reduced-motion` to reduce). The focused section itself is the
+exception: the column goes to its very top, so the breadcrumb above it stays in view. Search
+hits, a comment's text (**Go to text**), a hybrid-search passage and an agent's section link
+are centred instead.
+
+A single jump is not enough, because the layout keeps changing after it: editors are mounted
+only near the viewport, a section without one shows a short text preview, and an editor that
+mounts grows to its full height (tables, diagrams, the long-table collapse). So after the jump
+the target is **anchored** (`web/src/lib/scroll-anchor.ts`): every frame its position is
+measured and the column's `scrollTop` corrected, until the layout has held still for 300 ms
+(a ResizeObserver on the column content and the target counts any size change as movement),
+or after 2 s, or immediately when the reader takes over — wheel, touch, a press in the column
+(the scrollbar included) or any key other than a lone modifier. A new navigation replaces the
+running anchor.
+
+The browser's own scroll anchoring (`overflow-anchor`) keeps what is on screen still when
+content above changes, with its own choice of anchor node. Two mechanisms correcting the same
+`scrollTop` would fight, so the anchor sets `overflow-anchor: none` on the column while it
+runs and restores the previous value when it stops; from then on the browser keeps the
+reader's place through late changes (a diagram that renders after the anchor let go).
+
+A section whose editor unmounts keeps the height it had while mounted
+(`web/src/lib/section-heights.ts`): the measured height becomes the `min-height` of the slot
+that shows the preview, so sections do not shrink back as the reader moves away from them. The
+record follows the mounted editor through edits, long-table toggles and diagrams; it is only
+applied at the width it was measured at. A remounted editor keeps that floor until it has grown
+to it or one second has passed, so a section that really got shorter then shrinks. A section
+that was never mounted shows its preview at its natural height, and the anchor absorbs the
+change when its editor arrives. Folded sections and the rows outside a section focus are not
+rendered, so neither is affected.
+
+`web/scripts/document-scroll-measure.mjs` seeds a large specification into a Backlot lease and
+measures, in Chromium, how far the target's top is from the column top 100 ms to 4 s after
+an outline click, a cold `section=` load, an in-app `section=` change and an outline click
+inside a section focus.
 
 ## Formatting, continuous writing, text comments, section references and paste
 
