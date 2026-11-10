@@ -180,6 +180,8 @@ curl_never_sent() { case "$1" in 5|6|7) return 0 ;; *) return 1 ;; esac; }
 #   POST .../transition            replay 409s `transition.illegal` (X -> X is
 #                                  not an edge). Recovered instead by asking the
 #                                  store what happened — see confirm_transition.
+#   POST /v1/tickets/*/reopen      replay 409s `reopen.not_terminal`. Recovered
+#                                  the same way — see confirm_reopen.
 replay_class() {
   local method=$1 path=$2 extra=${3:-}
   # A conditional write is never replayable: the first attempt moved the version
@@ -2910,8 +2912,70 @@ cmd_withdraw() {
   echo "withdrew $id"
 }
 
+# reopen ID --reason WHY [--to STATE] brings a ticket back out of a terminal
+# state; reopen QID (no --reason) takes back an answered question. The two share
+# a verb because both are "undo a close"; --reason, which only the ticket form
+# takes, is what tells them apart, then the q-xxxxxxxx id shape.
+REOPEN_FROM=""
+confirm_reopen() {
+  local state
+  http_request GET "/v1/tickets/$(urlenc "$CONFIRM_TICKET")" "" "" safe
+  if [ -n "$REQ_FAIL" ] || [ "$REQ_CODE" != 200 ]; then
+    warn "could not re-read $CONFIRM_TICKET to find out"
+    return 1
+  fi
+  state=$(ticket_field state)
+  if [ "$state" != "$REOPEN_FROM" ]; then
+    warn "it did land — $CONFIRM_TICKET is now '$state'"
+    return 0
+  fi
+  warn "it did not land — $CONFIRM_TICKET is still '$state'; replaying the reopen"
+  return 10
+}
+
+cmd_reopen_ticket() {
+  local id=$1; shift
+  local reason="" to=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --reason) [ $# -ge 2 ] || die "reopen: --reason needs a value"; reason=$2; shift 2 ;;
+      --to) [ $# -ge 2 ] || die "reopen: --to needs a value"; to=$2; shift 2 ;;
+      *) die "reopen: unknown argument '$1' (usage: takomo reopen ID --reason WHY [--to STATE])" ;;
+    esac
+  done
+  [ -n "$reason" ] || die "reopen: --reason is required (usage: takomo reopen ID --reason WHY [--to STATE])"
+  api GET "/v1/tickets/$(urlenc "$id")" >/dev/null
+  REOPEN_FROM=$(ticket_field state)
+  local fence; fence=$(fence_load "$id")
+  local data; data=$(TS_TO="$to" TS_REASON="$reason" TS_FENCE="$fence" python3 <<'PY2'
+import json, os
+d = {"reason": os.environ["TS_REASON"]}
+if os.environ.get("TS_TO",""): d["to"] = os.environ["TS_TO"]
+if os.environ.get("TS_FENCE",""): d["fence"] = int(os.environ["TS_FENCE"])
+print(json.dumps(d))
+PY2
+)
+  CONFIRM_TICKET=$id
+  api POST "/v1/tickets/$(urlenc "$id")/reopen" "$data" "" confirm_reopen >/dev/null
+  # The reopen bumps the fence, so whatever token was stored for the ticket is
+  # stale from here on.
+  fence_clear "$id"
+  local newstate; newstate=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$REQ_OUT")
+  echo "$id reopened: $REOPEN_FROM -> $newstate"
+}
+
 cmd_reopen() {
-  local id=${1:-}; [ -n "$id" ] || die "reopen: usage: takomo reopen QID  (take back an answered question; needs the human scope)"
+  local id=${1:-}; [ -n "$id" ] || die "reopen: usage: takomo reopen ID --reason WHY [--to STATE]  (reopen a done/cancelled ticket)  ·  takomo reopen QID  (take back an answered question; needs the human scope)"
+  shift
+  local a
+  for a in "$@"; do
+    case "$a" in --reason|--to) cmd_reopen_ticket "$id" "$@"; return ;; esac
+  done
+  case "$id" in
+    q-????????) ;;
+    *) cmd_reopen_ticket "$id" "$@"; return ;;
+  esac
+  [ $# -eq 0 ] || die "reopen: a question reopen takes no arguments (usage: takomo reopen QID)"
   api POST "/v1/questions/$(urlenc "$id")/reopen" '{}' >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
@@ -4257,6 +4321,12 @@ Claiming & progressing (the fence is remembered locally after a claim):
   takomo done ID             move to the workflow's done state
   takomo block ID            move to the workflow's blocked state
   takomo cancel ID           move to the workflow's cancelled state
+  takomo reopen ID --reason WHY [--to STATE]
+                             bring a done/cancelled ticket back (initial state
+                             by default); clears any lease, records who and why.
+                             Reopening out of 'done' on factory-default needs
+                             the human scope; a child of a closed parent needs
+                             the parent reopened first
   takomo move ID STATE       move to an arbitrary workflow state
   takomo release ID [REASON] return the ticket to the queue
 

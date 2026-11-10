@@ -9,9 +9,11 @@
 //! code path, so no caller can quietly skip a workflow's approval gate.
 //!
 //! There is exactly one other `UPDATE tickets SET state` in the codebase —
-//! `store::questions::override_state`, the administrative reversal behind
-//! reopening an answered question, for which the workflow has no edge. Its doc
-//! comment enumerates every check it therefore skips and what gates it instead.
+//! [`override_state`] below, the administrative write behind the two moves the
+//! workflow deliberately has no edge for: reopening an answered question
+//! (`store::questions`) and reopening a ticket that reached a terminal state
+//! ([`Store::reopen_ticket`]). Its doc comment enumerates every check it
+//! therefore skips and what each caller gates it with instead.
 //! `grep -rn "SET state" src/` should return those two and nothing else; a third
 //! is a bug.
 
@@ -331,7 +333,7 @@ pub(super) fn apply_transition(
     if candidates.is_empty() {
         let remedy = if allowed.is_empty() {
             format!(
-                "'{}' is a terminal state; no transitions leave it.",
+                "'{}' is a terminal state; no transitions leave it. If it was closed by mistake, reopen it with POST /v1/tickets/{id}/reopen and a reason.",
                 t.state
             )
         } else {
@@ -863,4 +865,340 @@ fn requirement_error(
     )
     .current_state(t.state.clone())
     .allowed_transitions(allowed)
+}
+
+/// Set a ticket's state **without** consulting the workflow — the one state
+/// write in this crate that does not go through [`apply_transition`]. It has
+/// exactly two callers, each an administrative move the workflow has no edge for
+/// on purpose:
+///
+/// 1. `Store::reopen_question` — the reversal of a resume that already
+///    happened. On `factory-default` the answer resumed `needs-decision ->
+///    ready`, and there is no `ready -> needs-decision` edge to walk back along
+///    (nor should there be — no agent should be able to park a ticket it does
+///    not hold).
+/// 2. [`Store::reopen_ticket`] — bringing a ticket back out of a terminal state.
+///    Terminal states have no outgoing edges by contract (the workflow validator
+///    refuses them), so "terminal" keeps meaning "end of the normal lifecycle"
+///    and a reopen is visible as its own act rather than as one more edge.
+///
+/// What it therefore skips, and what stands in for each: edge **legality** (the
+/// caller must pass a state the workflow defines); every **`requires` entry** —
+/// `claim`, `scope:<s>`, `guard:<id>`; the **holder lock and fence echo**; and
+/// the workflow's **auto-release policy**. Each caller gates itself instead, and
+/// its own doc comment lists how. Any active claim is released here, because a
+/// state change by fiat must never leave a lease pointing at work that the move
+/// just redefined.
+///
+/// The events it emits are deliberately identical in shape to the normal path's,
+/// so an event consumer sees one kind of `transitioned` payload, not two.
+pub(super) fn override_state(
+    conn: &Connection,
+    t: &Ticket,
+    to: &str,
+    actor: &str,
+    reason: &str,
+    now: i64,
+) -> ApiResult<()> {
+    let had_claim = t.active_claim(now).is_some();
+    if had_claim {
+        conn.execute(
+            "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, claim_since = NULL WHERE id = ?1",
+            params![t.id],
+        )?;
+    }
+    let from = t.state.clone();
+    conn.execute(
+        "UPDATE tickets SET state = ?2 WHERE id = ?1",
+        params![t.id, to],
+    )?;
+    touch_ticket(conn, &t.id, now)?;
+    emit_event(
+        conn,
+        Some(&t.id),
+        Some(&t.project),
+        actor,
+        "transitioned",
+        json!({ "from": from, "to": to, "reason": reason, "auto_released": had_claim }),
+        now,
+    )?;
+    if had_claim {
+        emit_event(
+            conn,
+            Some(&t.id),
+            Some(&t.project),
+            actor,
+            "released",
+            json!({ "fence": t.fence_seq, "reason": reason }),
+            now,
+        )?;
+    }
+    Ok(())
+}
+
+/// Longest reopen reason accepted, in bytes — the same bound the transition
+/// route documents for its `reason`.
+pub const MAX_REOPEN_REASON: usize = 2000;
+
+impl Store {
+    /// Bring a ticket back out of a terminal state (`done`, `cancelled`, …).
+    ///
+    /// A dedicated operation rather than a workflow edge: terminal states keep
+    /// having no outgoing transitions, so every workflow stays valid and the
+    /// ordinary lifecycle still ends there. The move is written by
+    /// [`override_state`], and this function is where the checks that move skips
+    /// are made instead, in the order the headline error should name them:
+    ///
+    /// 1. **Archive** — refused while the project is archived (`project.archived`).
+    /// 2. **Reason** — required, 1-[`MAX_REOPEN_REASON`] bytes after trimming
+    ///    (`validation.reason`); it is recorded on the event and as a comment.
+    /// 3. **Precondition** — the ticket must sit in a terminal state
+    ///    (`reopen.not_terminal`). This is also what makes a retry safe: a reopen
+    ///    that already landed is refused rather than applied twice, with the
+    ///    current state in the error.
+    /// 4. **Target** — `to`, or the workflow's initial state, must exist
+    ///    (`reopen.unknown_state`) and must not itself be terminal
+    ///    (`reopen.target_terminal`).
+    /// 5. **Authority** — undoing a close is as strong an act as making it, the
+    ///    same rule `reopen_question` applies to approvals: the caller must hold
+    ///    the `scope:` requirements of at least one workflow edge into the
+    ///    ticket's current state (`reopen.scope`, 403). On `factory-default`
+    ///    that is `human` for `done` (approved by a human) and nothing beyond
+    ///    `write` for `cancelled` (several unscoped edges cancel). A state no
+    ///    edge leads into needs only `write`, which the route already demands.
+    /// 6. **Hierarchy** — a ticket whose parent is itself terminal is refused
+    ///    (`reopen.parent_terminal`): a closed parent was closed on the promise
+    ///    (`guard:no_open_children`) that nothing beneath it is open. Reopen the
+    ///    parent first. Children of the reopened ticket stay as they are; a
+    ///    reopened blocker blocks its dependents again through the ordinary
+    ///    `no_open_blockers` reading of the dependency graph.
+    /// 7. **Lease** — terminal entry normally released the claim, but if one is
+    ///    still active it follows the transition rule: another holder's lease is
+    ///    `claim.held`, the caller's own needs its fence (`fence.required` /
+    ///    `fence.stale`), and a presented fence on an unclaimed ticket must be
+    ///    current. The reopen then clears any claim, forgets a lapsed holder, and
+    ///    **bumps the fence**, so a worker still holding the token from before the
+    ///    close cannot write to the reopened ticket.
+    ///
+    /// Writes, in one transaction: the state (via `override_state`, which emits
+    /// `transitioned`, plus `released` if a claim was active), the cleared lease
+    /// and bumped fence, a comment naming who reopened it from where and why, and
+    /// a `ticket_reopened` event for audit filtering (`GET /v1/events?kind=`).
+    pub fn reopen_ticket(
+        &self,
+        id: &str,
+        to: Option<&str>,
+        reason: &str,
+        fence: Option<i64>,
+        actor: &str,
+        scopes: &HashSet<String>,
+    ) -> ApiResult<Ticket> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let mut t = get_ticket_required(tx, id)?;
+            super::helpers::ensure_ticket_writable(tx, &t)?;
+
+            let reason = reason.trim();
+            if reason.is_empty() || reason.len() > MAX_REOPEN_REASON {
+                return Err(ApiError::validation(
+                    "validation.reason",
+                    format!("Field 'reason' is required for a reopen and must be 1-{MAX_REOPEN_REASON} bytes: say why the ticket is coming back (it is recorded on the ticket for whoever closed it)."),
+                ));
+            }
+
+            let wf = get_workflow(tx, &t.project)?;
+            if clear_expired_claim(tx, &t, now)? {
+                t.lapsed_claim_holder = t.claim_holder.take();
+                t.claim_expires_at = None;
+                t.claim_since = None;
+            }
+            let allowed = allowed_from(&wf, &t.state);
+
+            let current = wf.state(&t.state);
+            if !current.is_some_and(|s| s.terminal) {
+                return Err(ApiError::conflict(
+                    "reopen.not_terminal",
+                    format!(
+                        "Ticket '{id}' is in '{}', which is not a terminal state of workflow '{}'. Only a ticket that has left its lifecycle (done, cancelled, ...) can be reopened.",
+                        t.state, wf.name
+                    ),
+                )
+                .remedy(format!(
+                    "Nothing to reopen. If a reopen was just retried, it already landed. To move a live ticket, use POST /v1/tickets/{id}/transition with one of allowed_transitions."
+                ))
+                .current_state(t.state.clone())
+                .allowed_transitions(allowed));
+            }
+
+            let target_id = to.unwrap_or(wf.initial.as_str()).to_string();
+            let non_terminal: Vec<&str> = wf
+                .states
+                .iter()
+                .filter(|s| !s.terminal)
+                .map(|s| s.id.as_str())
+                .collect();
+            match wf.state(&target_id) {
+                None => {
+                    return Err(ApiError::conflict(
+                        "reopen.unknown_state",
+                        format!(
+                            "State '{target_id}' does not exist in project '{}''s workflow '{}'.",
+                            t.project, wf.name
+                        ),
+                    )
+                    .remedy(format!(
+                        "Omit 'to' to reopen into the initial state '{}', or pass one of: {}.",
+                        wf.initial,
+                        non_terminal.join(", ")
+                    ))
+                    .current_state(t.state.clone()));
+                }
+                Some(s) if s.terminal => {
+                    return Err(ApiError::conflict(
+                        "reopen.target_terminal",
+                        format!(
+                            "State '{target_id}' is terminal; a reopen must bring the ticket back into its lifecycle."
+                        ),
+                    )
+                    .remedy(format!(
+                        "Pass a non-terminal 'to': {}.",
+                        non_terminal.join(", ")
+                    ))
+                    .current_state(t.state.clone()));
+                }
+                Some(_) => {}
+            }
+
+            // Authority: the scope set of at least one edge into the current state.
+            let incoming: Vec<Vec<String>> = wf
+                .transitions
+                .iter()
+                .filter(|e| e.to == t.state)
+                .map(|e| {
+                    e.requires
+                        .iter()
+                        .filter_map(|raw| match Requirement::parse(raw) {
+                            Ok(Requirement::Scope(s)) if !scopes.contains(&s) => Some(s),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .collect();
+            if !incoming.is_empty() && !incoming.iter().any(|m| m.is_empty()) {
+                let missing = incoming
+                    .into_iter()
+                    .min_by_key(|m| m.len())
+                    .unwrap_or_default();
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "reopen.scope",
+                    format!(
+                        "Reopening a ticket out of '{}' requires scope(s) your token lacks: {}. Undoing a close takes the same authority that every way into '{}' demands.",
+                        t.state,
+                        missing.join(", "),
+                        t.state
+                    ),
+                )
+                .remedy("Ask an operator holding that scope to reopen it, or have such a token minted (takomo token create).")
+                .details(json!({ "missing_scopes": missing }))
+                .current_state(t.state.clone()));
+            }
+
+            if let Some(parent_id) = t.parent.clone() {
+                if let Some(parent) = super::helpers::get_ticket_opt(tx, &parent_id)? {
+                    let parent_wf = if parent.project == t.project {
+                        None
+                    } else {
+                        Some(get_workflow(tx, &parent.project)?)
+                    };
+                    let pwf = parent_wf.as_ref().unwrap_or(&wf);
+                    if pwf.state(&parent.state).is_some_and(|s| s.terminal) {
+                        return Err(ApiError::conflict(
+                            "reopen.parent_terminal",
+                            format!(
+                                "Ticket '{id}' sits under '{parent_id}', which is '{}' (terminal). A closed parent was closed on the promise that nothing beneath it is open.",
+                                parent.state
+                            ),
+                        )
+                        .remedy(format!(
+                            "Reopen the parent first (POST /v1/tickets/{parent_id}/reopen), then this ticket."
+                        ))
+                        .details(json!({ "parent": parent_id, "parent_state": parent.state }))
+                        .current_state(t.state.clone()));
+                    }
+                }
+            }
+
+            match t.active_claim(now) {
+                Some((holder, expires)) if holder != actor => {
+                    return Err(ApiError::conflict(
+                        "claim.held",
+                        format!(
+                            "Ticket '{id}' is claimed by '{holder}' {}. Only the lease holder may move a claimed ticket.",
+                            super::helpers::held_phrase(expires)
+                        ),
+                    )
+                    .remedy(format!("Ask the holder to release it (POST /v1/tickets/{id}/release) or have an admin force-release it (POST /v1/tickets/{id}/force-release), then reopen."))
+                    .details(json!({ "holder": holder, "expires_at": expires.map(iso) }))
+                    .current_state(t.state.clone()));
+                }
+                Some(_) => match fence {
+                    None => {
+                        return Err(ApiError::conflict(
+                            "fence.required",
+                            format!(
+                                "Ticket '{id}' is claimed by you; a reopen must echo the lease's fencing token. Include \"fence\": {} in the request body.",
+                                t.fence_seq
+                            ),
+                        )
+                        .current_state(t.state.clone()));
+                    }
+                    Some(f) if f != t.fence_seq => {
+                        return Err(stale_fence_error(id, f, t.fence_seq)
+                            .current_state(t.state.clone()));
+                    }
+                    Some(_) => {}
+                },
+                None => {
+                    if let Some(f) = fence {
+                        if f != t.fence_seq {
+                            return Err(stale_fence_error(id, f, t.fence_seq)
+                                .current_state(t.state.clone()));
+                        }
+                    }
+                }
+            }
+
+            let from = t.state.clone();
+            override_state(tx, &t, &target_id, actor, reason, now)?;
+            tx.execute(
+                "UPDATE tickets SET lapsed_claim_holder = NULL, fence_seq = fence_seq + 1 WHERE id = ?1",
+                params![id],
+            )?;
+            let comment = insert_comment_tx(
+                tx,
+                id,
+                actor,
+                &format!("Reopened by {actor}: `{from}` → `{target_id}`.\n\nReason: {reason}"),
+                now,
+            )?;
+            emit_event(
+                tx,
+                Some(id),
+                Some(&t.project),
+                actor,
+                "ticket_reopened",
+                json!({
+                    "from": from,
+                    "to": target_id,
+                    "reason": reason,
+                    "comment": comment.id,
+                    "fence": t.fence_seq,
+                    "new_fence": t.fence_seq + 1,
+                }),
+                now,
+            )?;
+            get_ticket_required(tx, id)
+        })
+    }
 }

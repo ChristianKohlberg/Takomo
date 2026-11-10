@@ -836,6 +836,37 @@ server.registerTool(
 );
 
 server.registerTool(
+  "takomo_reopen_ticket",
+  {
+    title: "Reopen a closed ticket",
+    description:
+      "Reopen a ticket that reached a terminal state (done, cancelled) — e.g. one closed by mistake. Moves it " +
+      "to the workflow's initial state (or a non-terminal `to`), clears any lease and bumps the fence, and " +
+      "records who reopened it and why as a comment. Needs the scopes of at least one edge into the current " +
+      "state (factory-default: human for done). Refused when the ticket is not terminal (reopen.not_terminal) " +
+      "or its parent is still closed (reopen.parent_terminal — reopen the parent first). For an answered " +
+      "question use takomo_reopen.",
+    inputSchema: {
+      id: z.string().describe("Ticket id (in a terminal state)."),
+      reason: z.string().describe("Why the ticket comes back (required, 1-2000 bytes)."),
+      to: z.string().optional().describe("Non-terminal state to reopen into; defaults to the workflow's initial state."),
+      fence: z.number().int().optional().describe("Override the remembered fencing token."),
+    },
+  },
+  tool(async (a) => {
+    const before = await getTicket(a.id);
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/tickets/${encodeURIComponent(a.id)}/reopen`,
+      body: { reason: a.reason, to: a.to, fence: resolveFence(a.id, a.fence) },
+    });
+    // The reopen bumps the fence: any remembered lease token is stale now.
+    forgetLease(a.id);
+    return ok({ ok: true, reopened_from: before.state, transitioned_to: res?.state, ticket: res });
+  })
+);
+
+server.registerTool(
   "takomo_questions",
   {
     title: "List questions (inbox)",

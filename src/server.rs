@@ -419,6 +419,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/tickets/{id}/start", post(crate::api::transition::start))
         .route("/v1/tickets/{id}/block", post(crate::api::transition::block))
         .route(
+            "/v1/tickets/{id}/reopen",
+            post(crate::api::transition::reopen),
+        )
+        .route(
             "/v1/tickets/{id}/transition",
             post(crate::api::transition::transition),
         )

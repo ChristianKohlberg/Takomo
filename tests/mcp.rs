@@ -3918,3 +3918,36 @@ async fn mcp_drives_the_behavior_loop() {
     assert!(!is_err, "{runs}");
     assert_eq!(runs["items"][0]["failed"], 1, "{runs}");
 }
+
+/// The hosted MCP surface reaches the same reopen as `POST /v1/tickets/{id}/reopen`,
+/// under its own name so it cannot be confused with reopening a question.
+#[tokio::test]
+async fn hosted_mcp_reopens_a_terminal_ticket() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+    let id = app.create_ticket("cancelled by mistake").await;
+
+    // Not terminal yet: the stable refusal code reaches the agent.
+    let (refused, is_error) = app
+        .tool(
+            &app.worker,
+            "takomo_reopen_ticket",
+            json!({ "id": id, "reason": "too early" }),
+        )
+        .await;
+    assert!(is_error, "{refused}");
+    assert_eq!(refused["code"], "reopen.not_terminal", "{refused}");
+
+    app.tool_ok(&app.worker, "takomo_cancel", json!({ "id": id }))
+        .await;
+    let out = app
+        .tool_ok(
+            &app.worker,
+            "takomo_reopen_ticket",
+            json!({ "id": id, "reason": "cancelled by a script" }),
+        )
+        .await;
+    assert_eq!(out["reopened_from"], "cancelled", "{out}");
+    assert_eq!(out["transitioned_to"], "brief", "{out}");
+    assert_eq!(out["ticket"]["state"], "brief", "{out}");
+}
