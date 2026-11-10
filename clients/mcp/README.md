@@ -46,6 +46,7 @@ not change or embed the server in any way.
 | `takomo_done` | Move to the workflow's terminal `done` state. |
 | `takomo_block` | Move to the workflow's blocked state; optional `comment` recorded first. |
 | `takomo_cancel` | Move to the workflow's cancelled terminal state. |
+| `takomo_reopen_ticket` | Bring a done/cancelled ticket back (`reason` required, optional non-terminal `to`; defaults to the initial state). Clears the lease and bumps the fence. |
 | `takomo_comment` | Add a comment (`id`, `body`). |
 | `takomo_link` | Attach/update a named link (`key`, `value`), merging with existing links. |
 | `takomo_tag` | Tag entities onto a ticket — `add`/`remove` `kind:handle` refs (e.g. `person:ada`); reference metadata only. |

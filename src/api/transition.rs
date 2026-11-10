@@ -103,3 +103,28 @@ pub async fn block(
     state.wake();
     Ok(Json(updated.to_json(now_ms())))
 }
+
+/// Bring a ticket back out of a terminal state (`done`, `cancelled`, ...) into
+/// the workflow's initial state, or an explicit non-terminal `to`. Not a
+/// workflow edge: terminal states keep having none. `Store::reopen_ticket`
+/// documents every check the move makes instead and why.
+pub async fn reopen(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    load_visible(&state, &ctx, &id)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["to", "reason", "fence"])?;
+    let reason = require_str(obj, "reason")?;
+    let to = get_str(obj, "to")?;
+    let fence = get_i64(obj, "fence")?;
+    let ticket =
+        state
+            .store
+            .reopen_ticket(&id, to.as_deref(), &reason, fence, &ctx.actor, &ctx.scopes)?;
+    state.wake();
+    Ok(Json(ticket.to_json(now_ms())))
+}

@@ -17,10 +17,10 @@
 use super::answer_grants::revoke_open_grants_for_question;
 use super::helpers::{
     check_fence_for_write, clear_expired_claim, emit_event, ensure_project_writable,
-    get_ticket_required, get_workflow, touch_ticket,
+    get_ticket_required, get_workflow,
 };
 use super::model::{Question, QuestionMessage, Ticket, MAX_BODY, MAX_TITLE};
-use super::transition::{apply_transition, MoveKind};
+use super::transition::{apply_transition, override_state, MoveKind};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, question_id};
@@ -930,76 +930,6 @@ fn question_transition(
         now,
         MoveKind::Normal,
     )?;
-    Ok(())
-}
-
-/// Set a ticket's state **without** consulting the workflow — the one state
-/// write in this crate that does not go through `apply_transition`, with exactly
-/// one caller: [`Store::reopen_question`].
-///
-/// Why it has to exist. Reopening is an administrative *reversal* of a resume
-/// that already happened, and the workflow has no edge for it: on
-/// `factory-default` the answer resumed `needs-decision -> ready`, and there is
-/// no `ready -> needs-decision` edge to walk back along (nor should there be —
-/// no agent should be able to park a ticket it does not hold). So the reversal
-/// is a write by fiat, and the honest thing is to name it rather than to let a
-/// raw `UPDATE` sit in the middle of a function that reads like ordinary
-/// bookkeeping.
-///
-/// What it therefore skips, and what stands in for each: edge **legality** (the
-/// caller must pass a state the workflow defines — `reopen_question` takes the
-/// workflow's own blocked state); every **`requires` entry** — `claim`,
-/// `scope:<s>`, `guard:<id>` (`reopen_question` gates itself instead: the
-/// question must be `answered`, an `approve` question needs the same
-/// `expert:<tag>` scope that could have answered it, and the ticket must still
-/// be unarchived, unclaimed, and sitting in the exact state the answer resumed
-/// it into — so nothing has come to rely on the answer); the **holder lock and
-/// fence echo** (there is provably no active claim, having just been checked);
-/// and the **auto-release policy** (with no claim there is nothing to release).
-///
-/// The events it emits are deliberately identical in shape to the normal path's,
-/// so an event consumer sees one kind of `transitioned` payload, not two.
-fn override_state(
-    conn: &Connection,
-    t: &Ticket,
-    to: &str,
-    actor: &str,
-    reason: &str,
-    now: i64,
-) -> ApiResult<()> {
-    let had_claim = t.active_claim(now).is_some();
-    if had_claim {
-        conn.execute(
-            "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, claim_since = NULL WHERE id = ?1",
-            params![t.id],
-        )?;
-    }
-    let from = t.state.clone();
-    conn.execute(
-        "UPDATE tickets SET state = ?2 WHERE id = ?1",
-        params![t.id, to],
-    )?;
-    touch_ticket(conn, &t.id, now)?;
-    emit_event(
-        conn,
-        Some(&t.id),
-        Some(&t.project),
-        actor,
-        "transitioned",
-        json!({ "from": from, "to": to, "reason": reason, "auto_released": had_claim }),
-        now,
-    )?;
-    if had_claim {
-        emit_event(
-            conn,
-            Some(&t.id),
-            Some(&t.project),
-            actor,
-            "released",
-            json!({ "fence": t.fence_seq, "reason": reason }),
-            now,
-        )?;
-    }
     Ok(())
 }
 

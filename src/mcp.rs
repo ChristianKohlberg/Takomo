@@ -355,6 +355,19 @@ pub struct TransitionArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReopenTicketArgs {
+    /// Ticket id (a ticket in a terminal state such as done or cancelled).
+    pub id: String,
+    /// Why the ticket comes back (required, 1-2000 bytes). Recorded as a
+    /// comment and on the `ticket_reopened` event.
+    pub reason: String,
+    /// Non-terminal state to reopen into. Defaults to the workflow's initial state.
+    pub to: Option<String>,
+    /// Override the fencing token (normally resolved automatically).
+    pub fence: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct FenceArgs {
     /// Ticket id.
     pub id: String,
@@ -1286,6 +1299,24 @@ impl TakomoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         respond(self.advance(&require_auth(&ctx)?, &a.id, "cancelled", a.fence))
+    }
+
+    #[tool(
+        description = "Reopen a ticket that reached a terminal state (done, cancelled) — e.g. \
+        one closed by mistake. Moves it to the workflow's initial state (or a non-terminal \
+        `to`), clears any lease and bumps the fence, and records who reopened it and why as a \
+        comment. Not a workflow edge: terminal states still have none. Needs the scopes of at \
+        least one edge into the current state (on factory-default: `human` for done). Refused \
+        when the ticket is not terminal (`reopen.not_terminal`) or its parent is still closed \
+        (`reopen.parent_terminal` — reopen the parent first). For an answered question use \
+        takomo_reopen instead."
+    )]
+    async fn takomo_reopen_ticket(
+        &self,
+        Parameters(a): Parameters<ReopenTicketArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_reopen_ticket(&require_auth(&ctx)?, a))
     }
 
     #[tool(description = "Add a comment to a ticket.")]
@@ -3938,6 +3969,28 @@ impl TakomoMcp {
                 .transition(id, to, None, fence, &auth.actor, &auth.scopes)?;
         self.state.wake();
         Ok(json!({ "ok": true, "transitioned_to": to, "ticket": updated.to_json(now_ms()) }))
+    }
+
+    fn do_reopen_ticket(&self, auth: &AuthCtx, a: ReopenTicketArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let ticket = load_visible(&self.state, auth, &a.id)?;
+        let fence = resolve_fence(&ticket, &auth.actor, a.fence);
+        let from = ticket.state.clone();
+        let updated = self.state.store.reopen_ticket(
+            &a.id,
+            a.to.as_deref(),
+            &a.reason,
+            fence,
+            &auth.actor,
+            &auth.scopes,
+        )?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "reopened_from": from,
+            "transitioned_to": updated.state,
+            "ticket": updated.to_json(now_ms()),
+        }))
     }
 
     /// Advance to the first legal target in `category` (done/blocked/cancelled),
